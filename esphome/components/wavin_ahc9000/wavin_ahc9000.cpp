@@ -4,6 +4,7 @@
 #include <vector>
 #include <cmath>
 #include <algorithm>
+#include "esp_task_wdt.h"
 
 namespace esphome {
 namespace wavin_ahc9000 {
@@ -51,6 +52,7 @@ void WavinAHC9000::update() {
   std::vector<uint16_t> regs;
   uint8_t urgent_processed = 0;
   while (!this->urgent_channels_.empty() && urgent_processed < this->poll_channels_per_cycle_) {
+    esp_task_wdt_reset();
     uint8_t ch = this->urgent_channels_.front();
     this->urgent_channels_.erase(this->urgent_channels_.begin());
     uint8_t ch_page = (uint8_t) (ch - 1);
@@ -133,6 +135,9 @@ void WavinAHC9000::update() {
 
     // Two steps per update to surface values faster
     for (int s = 0; s < 2; s++) {
+      // Feed watchdog between steps — on single-core ESP32-C3, sustained
+      // Modbus timeouts can exceed the 5s task watchdog limit.
+      esp_task_wdt_reset();
       switch (step) {
         case 0: {
           if (this->read_registers(CAT_CHANNELS, ch_page, CH_PRIMARY_ELEMENT, 1, regs) && regs.size() >= 1) {
