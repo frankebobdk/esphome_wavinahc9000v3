@@ -2,6 +2,10 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import sensor
 from esphome.const import (
+    CONF_DEVICE_CLASS,
+    CONF_UNIT_OF_MEASUREMENT,
+    CONF_ICON,
+    CONF_ACCURACY_DECIMALS,
     UNIT_PERCENT,
     DEVICE_CLASS_BATTERY,
     ICON_BATTERY,
@@ -28,28 +32,32 @@ CONFIG_SCHEMA = sensor.sensor_schema().extend(
 
 async def to_code(config):
     hub = await cg.get_variable(config[CONF_PARENT_ID])
-    sens = await sensor.new_sensor(config)
-    # Apply defaults based on sensor type
+
+    # Inject defaults before new_sensor() reads them from config
     if config[CONF_TYPE] == "battery":
-        cg.add(sens.set_device_class(DEVICE_CLASS_BATTERY))
-        cg.add(sens.set_unit_of_measurement(UNIT_PERCENT))
-        cg.add(sens.set_icon(ICON_BATTERY))
-        cg.add(sens.set_accuracy_decimals(0))
-        cg.add(hub.add_channel_battery_sensor(config[CONF_CHANNEL], sens))
-    # yaml_ready numeric sensor removed in favor of binary_sensor platform
+        config.setdefault(CONF_DEVICE_CLASS, DEVICE_CLASS_BATTERY)
+        config.setdefault(CONF_UNIT_OF_MEASUREMENT, UNIT_PERCENT)
+        config.setdefault(CONF_ICON, ICON_BATTERY)
+        config.setdefault(CONF_ACCURACY_DECIMALS, 0)
     else:
-        # temperature & comfort_setpoint share temperature meta
-        cg.add(sens.set_device_class(DEVICE_CLASS_TEMPERATURE))
-        cg.add(sens.set_unit_of_measurement(UNIT_CELSIUS))
-        cg.add(sens.set_accuracy_decimals(1))
-        if config[CONF_TYPE] == "comfort_setpoint":
-            cg.add(hub.add_channel_comfort_setpoint_sensor(config[CONF_CHANNEL], sens))
-        elif config[CONF_TYPE] == "floor_temperature":
-            cg.add(hub.add_channel_floor_temperature_sensor(config[CONF_CHANNEL], sens))
-        elif config[CONF_TYPE] == "floor_min_temperature":
-            cg.add(hub.add_channel_floor_min_temperature_sensor(config[CONF_CHANNEL], sens))
-        elif config[CONF_TYPE] == "floor_max_temperature":
-            cg.add(hub.add_channel_floor_max_temperature_sensor(config[CONF_CHANNEL], sens))
-        else:
-            cg.add(hub.add_channel_temperature_sensor(config[CONF_CHANNEL], sens))
+        config.setdefault(CONF_DEVICE_CLASS, DEVICE_CLASS_TEMPERATURE)
+        config.setdefault(CONF_UNIT_OF_MEASUREMENT, UNIT_CELSIUS)
+        config.setdefault(CONF_ACCURACY_DECIMALS, 1)
+
+    sens = await sensor.new_sensor(config)
+
+    # Register with hub
+    if config[CONF_TYPE] == "battery":
+        cg.add(hub.add_channel_battery_sensor(config[CONF_CHANNEL], sens))
+    elif config[CONF_TYPE] == "comfort_setpoint":
+        cg.add(hub.add_channel_comfort_setpoint_sensor(config[CONF_CHANNEL], sens))
+    elif config[CONF_TYPE] == "floor_temperature":
+        cg.add(hub.add_channel_floor_temperature_sensor(config[CONF_CHANNEL], sens))
+    elif config[CONF_TYPE] == "floor_min_temperature":
+        cg.add(hub.add_channel_floor_min_temperature_sensor(config[CONF_CHANNEL], sens))
+    elif config[CONF_TYPE] == "floor_max_temperature":
+        cg.add(hub.add_channel_floor_max_temperature_sensor(config[CONF_CHANNEL], sens))
+    else:
+        cg.add(hub.add_channel_temperature_sensor(config[CONF_CHANNEL], sens))
+
     cg.add(hub.add_active_channel(config[CONF_CHANNEL]))
