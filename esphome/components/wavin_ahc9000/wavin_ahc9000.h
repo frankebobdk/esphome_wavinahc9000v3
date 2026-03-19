@@ -184,6 +184,10 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   std::vector<uint8_t> urgent_channels_{}; // channels scheduled for immediate refresh on next update
   bool allow_mode_writes_{true};
 
+  // RS485 bus timing (computed in setup() from baud rate)
+  uint32_t post_tx_guard_us_{1500};   // delay after flush() before switching to RX
+  uint32_t inter_frame_delay_us_{5000}; // silence between consecutive transactions
+
   // YAML readiness tracking: which channels are present and which had an element block read at least once
   uint16_t yaml_primary_present_mask_{0};  // bit i set when channel (i+1) has a primary element and no tp lost
   uint16_t yaml_elem_read_mask_{0};        // bit i set when we've successfully read the element block for channel (i+1)
