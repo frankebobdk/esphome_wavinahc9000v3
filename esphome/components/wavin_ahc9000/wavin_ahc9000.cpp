@@ -5,6 +5,7 @@
 #include <cmath>
 #include <algorithm>
 #include "esp_task_wdt.h"
+#include "esp_system.h"
 
 namespace esphome {
 namespace wavin_ahc9000 {
@@ -57,6 +58,17 @@ void WavinAHC9000::update() {
     ESP_LOGV(TAG, "Polling suspended for %u ms more", (unsigned) (this->suspend_polling_until_ - millis()));
     return;
   }
+
+  // Periodic diagnostics: heap and update timing
+  static uint32_t diag_counter = 0;
+  static uint32_t last_update_start = 0;
+  uint32_t update_start = millis();
+  if (last_update_start > 0 && ++diag_counter % 120 == 0) {
+    ESP_LOGI(TAG, "DIAG: free_heap=%u min_heap=%u",
+             (unsigned) esp_get_free_heap_size(),
+             (unsigned) esp_get_minimum_free_heap_size());
+  }
+  last_update_start = update_start;
 
   // Process any urgent channels first (scheduled due to a write)
   std::vector<uint16_t> regs;
@@ -217,6 +229,10 @@ void WavinAHC9000::update() {
                   st.floor_temp_c = NAN;
                 }
               }
+              if (st.consecutive_elem_failures > 0) {
+                ESP_LOGI(TAG, "CH%u: recovered after %u consecutive failures", ch_num, (unsigned) st.consecutive_elem_failures);
+              }
+              st.consecutive_elem_failures = 0;
               ESP_LOGD(TAG, "CH%u current=%.1fC", ch_num, st.current_temp_c);
               // Publish to per-channel temperature sensor if configured
               auto it_t = this->temperature_sensors_.find(ch_num);
@@ -240,7 +256,12 @@ void WavinAHC9000::update() {
                 }
               }
             } else {
-              ESP_LOGW(TAG, "CH%u: element temp read failed", ch_num);
+              st.consecutive_elem_failures++;
+              if (st.consecutive_elem_failures >= 5) {
+                ESP_LOGE(TAG, "CH%u: %u consecutive element read failures", ch_num, (unsigned) st.consecutive_elem_failures);
+              } else {
+                ESP_LOGW(TAG, "CH%u: element temp read failed", ch_num);
+              }
             }
           } else {
             st.current_temp_c = NAN;
@@ -315,6 +336,18 @@ bool WavinAHC9000::read_registers(uint8_t category, uint8_t page, uint8_t index,
     msg[6] = crc & 0xFF;
     msg[7] = crc >> 8;
 
+    // Drain stale bytes from UART RX FIFO before transmitting.
+    // Prevents late responses from timed-out reads from contaminating
+    // subsequent frame parsing (cross-call and cross-attempt).
+    {
+        uint16_t stale = 0;
+        while (this->available()) { this->read(); stale++; }
+        if (stale > 0) {
+            ESP_LOGW(TAG, "RX: drained %u stale byte(s) before TX (cat=%u idx=%u page=%u attempt=%u)",
+                     stale, category, index, page, (unsigned) attempt + 1);
+        }
+    }
+
   // Direction control: if a dedicated flow control pin (DE/RE) is provided, drive HIGH to enable TX.
   if (this->flow_control_pin_ != nullptr) this->flow_control_pin_->digital_write(true);
   if (this->tx_enable_pin_ != nullptr) this->tx_enable_pin_->digital_write(true);
@@ -385,6 +418,15 @@ bool WavinAHC9000::write_register(uint8_t category, uint8_t page, uint8_t index,
     msg[8] = (uint8_t) (crc & 0xFF);
     msg[9] = (uint8_t) (crc >> 8);
 
+    {
+        uint16_t stale = 0;
+        while (this->available()) { this->read(); stale++; }
+        if (stale > 0) {
+            ESP_LOGW(TAG, "RX: drained %u stale byte(s) before TX-WR (cat=%u idx=%u page=%u attempt=%u)",
+                     stale, category, index, page, (unsigned) attempt + 1);
+        }
+    }
+
   if (this->flow_control_pin_ != nullptr) this->flow_control_pin_->digital_write(true);
   if (this->tx_enable_pin_ != nullptr) this->tx_enable_pin_->digital_write(true);
     ESP_LOGD(TAG, "TX-WR: cat=%u idx=%u page=%u val=0x%04X attempt=%u", category, index, page, (unsigned) value, (unsigned) attempt + 1);
@@ -448,6 +490,15 @@ bool WavinAHC9000::write_masked_register(uint8_t category, uint8_t page, uint8_t
     uint16_t crc = crc16(msg, 10);
     msg[10] = (uint8_t) (crc & 0xFF);
     msg[11] = (uint8_t) (crc >> 8);
+
+    {
+        uint16_t stale = 0;
+        while (this->available()) { this->read(); stale++; }
+        if (stale > 0) {
+            ESP_LOGW(TAG, "RX: drained %u stale byte(s) before TX-WM (cat=%u idx=%u page=%u attempt=%u)",
+                     stale, category, index, page, (unsigned) attempt + 1);
+        }
+    }
 
   if (this->flow_control_pin_ != nullptr) this->flow_control_pin_->digital_write(true);
   if (this->tx_enable_pin_ != nullptr) this->tx_enable_pin_->digital_write(true);
