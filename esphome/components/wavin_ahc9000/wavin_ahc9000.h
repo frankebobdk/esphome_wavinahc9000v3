@@ -227,7 +227,7 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   static constexpr uint16_t PACKED_CONFIGURATION_CHILD_LOCK_MASK = 0x0800; // child lock bit (0x4000->0x4800)
 
   // I/O reliability: number of attempts for read/write before escalating to WARN
-  static constexpr uint8_t IO_RETRY_ATTEMPTS = 2; // first failure logged at DEBUG, final at WARN
+  static constexpr uint8_t IO_RETRY_ATTEMPTS = 3; // first failures logged at DEBUG, final at WARN
 };
 
 // Simple dedicated switch subclass for child lock control. Avoids relying on codegen lambdas
