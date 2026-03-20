@@ -44,7 +44,7 @@ void WavinAHC9000::setup() {
   // software buffer is empty, but the hardware FIFO may still be shifting out the last byte.
   // inter_frame_delay: 18× frame time (~5ms at 38400) gives the Wavin AHC-9000 time to
   // process one response before the next request arrives.
-  const uint32_t baud = this->get_baud_rate();
+  const uint32_t baud = 38400;  // AHC-9000 hardware constant
   const uint32_t frame_us = (11 * 1000000UL + baud - 1) / baud;  // ceil(11 bits / baud)
   this->post_tx_guard_us_ = std::max<uint32_t>(frame_us * 6, 1500);
   this->inter_frame_delay_us_ = std::max<uint32_t>(frame_us * 18, 5000);
