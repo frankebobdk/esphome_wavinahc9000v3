@@ -49,9 +49,9 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   void add_channel_temperature_sensor(uint8_t ch, sensor::Sensor *s);
   void add_channel_comfort_setpoint_sensor(uint8_t ch, sensor::Sensor *s);
   void add_channel_floor_temperature_sensor(uint8_t ch, sensor::Sensor *s);
-  // New read-only floor limit sensors
   void add_channel_floor_min_temperature_sensor(uint8_t ch, sensor::Sensor *s);
   void add_channel_floor_max_temperature_sensor(uint8_t ch, sensor::Sensor *s);
+  void add_channel_rssi_sensor(uint8_t ch, sensor::Sensor *s);
   void add_channel_child_lock_switch(uint8_t ch, switch_::Switch *s) { this->child_lock_switches_[ch] = s; }
   void add_active_channel(uint8_t ch);
 
@@ -135,6 +135,7 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
     climate::ClimateMode mode{climate::CLIMATE_MODE_HEAT};
     climate::ClimateAction action{climate::CLIMATE_ACTION_OFF};
     uint8_t battery_pct{255}; // 0..100; 255=unknown
+    float rssi_dbm{NAN};     // thermostat RSSI in dBm
     uint16_t primary_index{0};
     bool all_tp_lost{false};
     bool has_floor_sensor{false};
@@ -152,6 +153,7 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   std::map<uint8_t, sensor::Sensor *> floor_min_temperature_sensors_;
   std::map<uint8_t, sensor::Sensor *> floor_max_temperature_sensors_;
   std::map<uint8_t, sensor::Sensor *> comfort_setpoint_sensors_;
+  std::map<uint8_t, sensor::Sensor *> rssi_sensors_;
   std::map<uint8_t, switch_::Switch *> child_lock_switches_;
   binary_sensor::BinarySensor *yaml_ready_binary_sensor_{nullptr};
   text_sensor::TextSensor *yaml_text_sensor_{nullptr};
@@ -211,7 +213,8 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
 
   static constexpr uint8_t ELEM_AIR_TEMPERATURE = 0x04; // index within block
   static constexpr uint8_t ELEM_FLOOR_TEMPERATURE = 0x05; // index for floor probe
-  static constexpr uint8_t ELEM_BATTERY_STATUS = 0x0A;  // not used yet
+  static constexpr uint8_t ELEM_RSSI = 0x09;             // thermostat RSSI (raw * 0.5 - 74 = dBm)
+  static constexpr uint8_t ELEM_BATTERY_STATUS = 0x0A;  // battery level (0-10 scale)
 
   static constexpr uint8_t PACKED_MANUAL_TEMPERATURE = 0x00;
   static constexpr uint8_t PACKED_STANDBY_TEMPERATURE = 0x04;
@@ -278,7 +281,9 @@ inline void WavinAHC9000::add_channel_floor_max_temperature_sensor(uint8_t ch, s
   this->floor_max_temperature_sensors_[ch] = s;
 }
 
-// numeric yaml_ready sensor removed
+inline void WavinAHC9000::add_channel_rssi_sensor(uint8_t ch, sensor::Sensor *s) {
+  this->rssi_sensors_[ch] = s;
+}
 
 class WavinZoneClimate : public climate::Climate, public Component {
  public:

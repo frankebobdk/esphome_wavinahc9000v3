@@ -7,7 +7,9 @@ from esphome.const import (
     CONF_ICON,
     CONF_ACCURACY_DECIMALS,
     UNIT_PERCENT,
+    UNIT_DECIBEL_MILLIWATT,
     DEVICE_CLASS_BATTERY,
+    DEVICE_CLASS_SIGNAL_STRENGTH,
     ICON_BATTERY,
     DEVICE_CLASS_TEMPERATURE,
     UNIT_CELSIUS,
@@ -25,7 +27,7 @@ CONFIG_SCHEMA = sensor.sensor_schema().extend(
     {
         cv.GenerateID(CONF_PARENT_ID): cv.use_id(WavinAHC9000),
         cv.Required(CONF_CHANNEL): cv.int_range(min=1, max=16),
-    cv.Required(CONF_TYPE): cv.one_of("battery", "temperature", "comfort_setpoint", "floor_temperature", "floor_min_temperature", "floor_max_temperature", lower=True),
+    cv.Required(CONF_TYPE): cv.one_of("battery", "temperature", "comfort_setpoint", "floor_temperature", "floor_min_temperature", "floor_max_temperature", "rssi", lower=True),
     }
 )
 
@@ -39,6 +41,10 @@ async def to_code(config):
         config.setdefault(CONF_UNIT_OF_MEASUREMENT, UNIT_PERCENT)
         config.setdefault(CONF_ICON, ICON_BATTERY)
         config.setdefault(CONF_ACCURACY_DECIMALS, 0)
+    elif config[CONF_TYPE] == "rssi":
+        config.setdefault(CONF_DEVICE_CLASS, DEVICE_CLASS_SIGNAL_STRENGTH)
+        config.setdefault(CONF_UNIT_OF_MEASUREMENT, UNIT_DECIBEL_MILLIWATT)
+        config.setdefault(CONF_ACCURACY_DECIMALS, 1)
     else:
         config.setdefault(CONF_DEVICE_CLASS, DEVICE_CLASS_TEMPERATURE)
         config.setdefault(CONF_UNIT_OF_MEASUREMENT, UNIT_CELSIUS)
@@ -57,6 +63,8 @@ async def to_code(config):
         cg.add(hub.add_channel_floor_min_temperature_sensor(config[CONF_CHANNEL], sens))
     elif config[CONF_TYPE] == "floor_max_temperature":
         cg.add(hub.add_channel_floor_max_temperature_sensor(config[CONF_CHANNEL], sens))
+    elif config[CONF_TYPE] == "rssi":
+        cg.add(hub.add_channel_rssi_sensor(config[CONF_CHANNEL], sens))
     else:
         cg.add(hub.add_channel_temperature_sensor(config[CONF_CHANNEL], sens))
 

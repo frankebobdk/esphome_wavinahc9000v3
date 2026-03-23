@@ -259,6 +259,15 @@ void WavinAHC9000::update() {
               if (it_ft != this->floor_temperature_sensors_.end() && it_ft->second != nullptr && !std::isnan(st.floor_temp_c)) {
                 it_ft->second->publish_state(st.floor_temp_c);
               }
+              // RSSI if available (element index 0x09)
+              if (regs.size() > ELEM_RSSI) {
+                float rssi = regs[ELEM_RSSI] * 0.5f - 74.0f;
+                st.rssi_dbm = rssi;
+                auto it_r = this->rssi_sensors_.find(ch_num);
+                if (it_r != this->rssi_sensors_.end() && it_r->second != nullptr) {
+                  it_r->second->publish_state(rssi);
+                }
+              }
               // Battery status if available (0..10 scale)
               if (regs.size() > ELEM_BATTERY_STATUS) {
                 uint16_t raw = regs[ELEM_BATTERY_STATUS];
@@ -591,25 +600,21 @@ void WavinAHC9000::write_channel_mode(uint8_t channel, climate::ClimateMode mode
   if (channel < 1 || channel > 16) return;
   uint8_t page = (uint8_t) (channel - 1);
   this->desired_mode_[channel] = mode;
-  // Always use strict baseline to 0x4000/0x4001 for reliable OFF/HEAT
-  bool ok = false;
-  {
-    uint16_t strict_val = (uint16_t) (0x4000 | (mode == climate::CLIMATE_MODE_OFF ? PACKED_CONFIGURATION_MODE_STANDBY : PACKED_CONFIGURATION_MODE_MANUAL));
-    ok = this->write_register(CAT_PACKED, page, PACKED_CONFIGURATION, strict_val);
-  }
+  // Use masked write (FC 0x45) to change only mode bits 0-2, preserving child lock, schedule, etc.
+  uint16_t new_bits = (mode == climate::CLIMATE_MODE_OFF) ? PACKED_CONFIGURATION_MODE_STANDBY : PACKED_CONFIGURATION_MODE_MANUAL;
+  uint16_t and_mask = (uint16_t) ~PACKED_CONFIGURATION_MODE_MASK;  // 0xFFF8 — preserve everything except bits 0-2
+  uint16_t or_mask = new_bits;                                      // set mode bits
+  bool ok = this->write_masked_register(CAT_PACKED, page, PACKED_CONFIGURATION, and_mask, or_mask);
   if (!ok) {
-    // Fallback: read-modify-write full register (update only mode bits)
+    // Fallback: full register write with read-modify-write
     std::vector<uint16_t> regs;
     if (this->read_registers(CAT_PACKED, page, PACKED_CONFIGURATION, 1, regs) && regs.size() >= 1) {
       uint16_t current = regs[0];
-      // Prefer standard standby bits for OFF; otherwise use MANUAL
-      uint16_t new_bits = (mode == climate::CLIMATE_MODE_OFF) ? PACKED_CONFIGURATION_MODE_STANDBY : PACKED_CONFIGURATION_MODE_MANUAL;
       uint16_t next = (uint16_t) ((current & ~PACKED_CONFIGURATION_MODE_MASK) | (new_bits & PACKED_CONFIGURATION_MODE_MASK));
-      ESP_LOGW(TAG, "WM fallback: PACKED_CONFIGURATION ch=%u cur=0x%04X next=0x%04X", (unsigned) channel, (unsigned) current, (unsigned) next);
+      ESP_LOGW(TAG, "Masked write failed, fallback RMW: ch=%u cur=0x%04X next=0x%04X", (unsigned) channel, (unsigned) current, (unsigned) next);
       ok = this->write_register(CAT_PACKED, page, PACKED_CONFIGURATION, next);
-  // No alternate OFF attempt to avoid special thermostat modes
     } else {
-      ESP_LOGW(TAG, "WM fallback: read PACKED_CONFIGURATION failed for ch=%u", (unsigned) channel);
+      ESP_LOGW(TAG, "Masked write + RMW fallback both failed for ch=%u", (unsigned) channel);
     }
   }
   if (ok) {
