@@ -261,11 +261,14 @@ void WavinAHC9000::update() {
               }
               // RSSI if available (element index 0x09)
               if (regs.size() > ELEM_RSSI) {
-                float rssi = regs[ELEM_RSSI] * 0.5f - 74.0f;
-                st.rssi_dbm = rssi;
-                auto it_r = this->rssi_sensors_.find(ch_num);
-                if (it_r != this->rssi_sensors_.end() && it_r->second != nullptr) {
-                  it_r->second->publish_state(rssi);
+                uint16_t raw_rssi = regs[ELEM_RSSI];
+                if (raw_rssi > 0 && raw_rssi <= 200) {  // 0 = no data, >200 = invalid
+                  float rssi = raw_rssi * 0.5f - 74.0f;
+                  st.rssi_dbm = rssi;
+                  auto it_r = this->rssi_sensors_.find(ch_num);
+                  if (it_r != this->rssi_sensors_.end() && it_r->second != nullptr) {
+                    it_r->second->publish_state(rssi);
+                  }
                 }
               }
               // Battery status if available (0..10 scale)
