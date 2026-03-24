@@ -1486,7 +1486,6 @@ climate::ClimateTraits WavinZoneClimate::traits() {
   climate::ClimateTraits t;
   
   t.set_supported_modes({climate::CLIMATE_MODE_HEAT, climate::CLIMATE_MODE_OFF});
-  t.set_supported_presets({climate::CLIMATE_PRESET_NONE, climate::CLIMATE_PRESET_ECO, climate::CLIMATE_PRESET_COMFORT});
   t.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE);
   t.add_feature_flags(climate::CLIMATE_SUPPORTS_ACTION);
   
@@ -1526,25 +1525,6 @@ void WavinZoneClimate::control(const climate::ClimateCall &call) {
       ESP_LOGW(TAG, "Mode writes disabled by config; skipping write for %s", this->get_name().c_str());
     }
     this->mode = (m == climate::CLIMATE_MODE_OFF) ? climate::CLIMATE_MODE_OFF : climate::CLIMATE_MODE_HEAT;
-    // Switching to HEAT clears preset to NONE (manual mode)
-    if (m == climate::CLIMATE_MODE_HEAT) {
-      this->preset = climate::CLIMATE_PRESET_NONE;
-    }
-  }
-
-  // Preset control (ECO/COMFORT)
-  if (call.get_preset().has_value()) {
-    auto p = *call.get_preset();
-    ESP_LOGD(TAG, "CTRL: preset=%d for %s", (int) p, this->get_name().c_str());
-    if (this->parent_->get_allow_mode_writes()) {
-      if (this->single_channel_set_) {
-        this->parent_->write_channel_preset(this->single_channel_, p);
-      } else if (!this->members_.empty()) {
-        for (auto ch : this->members_) this->parent_->write_channel_preset(ch, p);
-      }
-    }
-    this->preset = p;
-    this->mode = climate::CLIMATE_MODE_HEAT;
   }
 
   // Target temperature
