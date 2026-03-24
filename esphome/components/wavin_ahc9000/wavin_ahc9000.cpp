@@ -98,10 +98,31 @@ void WavinAHC9000::update() {
     if (this->read_registers(CAT_PACKED, ch_page, PACKED_CONFIGURATION, 1, regs) && regs.size() >= 1) {
       uint16_t raw_cfg = regs[0];
       uint16_t mode_bits = raw_cfg & PACKED_CONFIGURATION_MODE_MASK;
-      bool is_off = (mode_bits == PACKED_CONFIGURATION_MODE_STANDBY) || (mode_bits == PACKED_CONFIGURATION_MODE_STANDBY_ALT);
-      st.mode = is_off ? climate::CLIMATE_MODE_OFF : climate::CLIMATE_MODE_HEAT;
+      const char *mode_str = "MANUAL";
+      switch (mode_bits) {
+        case PACKED_CONFIGURATION_MODE_STANDBY:
+        case PACKED_CONFIGURATION_MODE_STANDBY_ALT:
+          st.mode = climate::CLIMATE_MODE_OFF;
+          st.preset = climate::CLIMATE_PRESET_NONE;
+          mode_str = "OFF";
+          break;
+        case PACKED_CONFIGURATION_MODE_ECO:
+          st.mode = climate::CLIMATE_MODE_HEAT;
+          st.preset = climate::CLIMATE_PRESET_ECO;
+          mode_str = "ECO";
+          break;
+        case PACKED_CONFIGURATION_MODE_COMFORT:
+          st.mode = climate::CLIMATE_MODE_HEAT;
+          st.preset = climate::CLIMATE_PRESET_COMFORT;
+          mode_str = "COMFORT";
+          break;
+        default:
+          st.mode = climate::CLIMATE_MODE_HEAT;
+          st.preset = climate::CLIMATE_PRESET_NONE;
+          break;
+      }
       st.child_lock = (raw_cfg & PACKED_CONFIGURATION_CHILD_LOCK_MASK) != 0;
-      ESP_LOGD(TAG, "CH%u cfg=0x%04X mode=%s child_lock=%s", (unsigned) ch, (unsigned) raw_cfg, is_off ? "OFF" : "HEAT", st.child_lock?"Y":"N");
+      ESP_LOGD(TAG, "CH%u cfg=0x%04X mode=%s child_lock=%s", (unsigned) ch, (unsigned) raw_cfg, mode_str, st.child_lock?"Y":"N");
       // Reconcile desired mode if pending and mismatch
       auto it_des = this->desired_mode_.find(ch);
       if (it_des != this->desired_mode_.end()) {
@@ -193,10 +214,31 @@ void WavinAHC9000::update() {
           if (this->read_registers(CAT_PACKED, ch_page, PACKED_CONFIGURATION, 1, regs) && regs.size() >= 1) {
             uint16_t raw_cfg = regs[0];
             uint16_t mode_bits = raw_cfg & PACKED_CONFIGURATION_MODE_MASK;
-            bool is_off = (mode_bits == PACKED_CONFIGURATION_MODE_STANDBY) || (mode_bits == PACKED_CONFIGURATION_MODE_STANDBY_ALT);
-            st.mode = is_off ? climate::CLIMATE_MODE_OFF : climate::CLIMATE_MODE_HEAT;
+            const char *mode_str = "MANUAL";
+            switch (mode_bits) {
+              case PACKED_CONFIGURATION_MODE_STANDBY:
+              case PACKED_CONFIGURATION_MODE_STANDBY_ALT:
+                st.mode = climate::CLIMATE_MODE_OFF;
+                st.preset = climate::CLIMATE_PRESET_NONE;
+                mode_str = "OFF";
+                break;
+              case PACKED_CONFIGURATION_MODE_ECO:
+                st.mode = climate::CLIMATE_MODE_HEAT;
+                st.preset = climate::CLIMATE_PRESET_ECO;
+                mode_str = "ECO";
+                break;
+              case PACKED_CONFIGURATION_MODE_COMFORT:
+                st.mode = climate::CLIMATE_MODE_HEAT;
+                st.preset = climate::CLIMATE_PRESET_COMFORT;
+                mode_str = "COMFORT";
+                break;
+              default:  // MANUAL (0)
+                st.mode = climate::CLIMATE_MODE_HEAT;
+                st.preset = climate::CLIMATE_PRESET_NONE;
+                break;
+            }
             st.child_lock = (raw_cfg & PACKED_CONFIGURATION_CHILD_LOCK_MASK) != 0;
-            ESP_LOGD(TAG, "CH%u cfg=0x%04X mode=%s child_lock=%s", ch_num, (unsigned) raw_cfg, is_off ? "OFF" : "HEAT", st.child_lock?"Y":"N");
+            ESP_LOGD(TAG, "CH%u cfg=0x%04X mode=%s child_lock=%s", ch_num, (unsigned) raw_cfg, mode_str, st.child_lock?"Y":"N");
           } else {
             ESP_LOGW(TAG, "CH%u: mode read failed", ch_num);
           }
@@ -292,6 +334,23 @@ void WavinAHC9000::update() {
             }
           } else {
             st.current_temp_c = NAN;
+          }
+          step = 5;
+          break;
+        }
+        case 5: {
+          // Read all preset temps in one transaction: comfort(0x01), eco(0x02), holiday(0x03), standby(0x04)
+          if (this->read_registers(CAT_PACKED, ch_page, PACKED_COMFORT_TEMPERATURE, 4, regs) && regs.size() >= 4) {
+            st.comfort_temp_c = this->raw_to_c(regs[0]);
+            st.eco_temp_c = this->raw_to_c(regs[1]);
+            st.holiday_temp_c = this->raw_to_c(regs[2]);
+            st.standby_temp_c = this->raw_to_c(regs[3]);
+          }
+          // Alarm thresholds + flags (PACKED 0x0C-0x0E, contiguous read)
+          if (this->read_registers(CAT_PACKED, ch_page, PACKED_ALARM_LOW_TEMPERATURE, 3, regs) && regs.size() >= 3) {
+            st.alarm_low_temp_c = this->raw_to_c(regs[0]);
+            st.alarm_high_temp_c = this->raw_to_c(regs[1]);
+            st.alarm_flags = regs[2];
           }
           step = 0;
           break;
@@ -604,9 +663,12 @@ void WavinAHC9000::write_channel_mode(uint8_t channel, climate::ClimateMode mode
   uint8_t page = (uint8_t) (channel - 1);
   this->desired_mode_[channel] = mode;
   // Use masked write (FC 0x45) to change only mode bits 0-2, preserving child lock, schedule, etc.
-  uint16_t new_bits = (mode == climate::CLIMATE_MODE_OFF) ? PACKED_CONFIGURATION_MODE_STANDBY : PACKED_CONFIGURATION_MODE_MANUAL;
+  uint16_t new_bits = PACKED_CONFIGURATION_MODE_MANUAL;  // default HEAT
+  if (mode == climate::CLIMATE_MODE_OFF) {
+    new_bits = PACKED_CONFIGURATION_MODE_STANDBY;
+  }
   uint16_t and_mask = (uint16_t) ~PACKED_CONFIGURATION_MODE_MASK;  // 0xFFF8 — preserve everything except bits 0-2
-  uint16_t or_mask = new_bits;                                      // set mode bits
+  uint16_t or_mask = new_bits;
   bool ok = this->write_masked_register(CAT_PACKED, page, PACKED_CONFIGURATION, and_mask, or_mask);
   if (!ok) {
     // Fallback: full register write with read-modify-write
@@ -622,10 +684,77 @@ void WavinAHC9000::write_channel_mode(uint8_t channel, climate::ClimateMode mode
   }
   if (ok) {
     this->channels_[channel].mode = (mode == climate::CLIMATE_MODE_OFF) ? climate::CLIMATE_MODE_OFF : climate::CLIMATE_MODE_HEAT;
+    this->channels_[channel].preset = climate::CLIMATE_PRESET_NONE;
     this->urgent_channels_.push_back(channel);
     this->suspend_polling_until_ = millis() + 100; // 100 ms guard
   } else {
     ESP_LOGW(TAG, "Mode write failed for ch=%u", (unsigned) channel);
+  }
+}
+
+void WavinAHC9000::write_channel_preset(uint8_t channel, climate::ClimatePreset preset) {
+  if (channel < 1 || channel > 16) return;
+  uint8_t page = (uint8_t) (channel - 1);
+  uint16_t new_bits;
+  switch (preset) {
+    case climate::CLIMATE_PRESET_ECO:
+      new_bits = PACKED_CONFIGURATION_MODE_ECO;
+      break;
+    case climate::CLIMATE_PRESET_COMFORT:
+      new_bits = PACKED_CONFIGURATION_MODE_COMFORT;
+      break;
+    default:  // NONE → MANUAL
+      new_bits = PACKED_CONFIGURATION_MODE_MANUAL;
+      break;
+  }
+  uint16_t and_mask = (uint16_t) ~PACKED_CONFIGURATION_MODE_MASK;
+  uint16_t or_mask = new_bits;
+  bool ok = this->write_masked_register(CAT_PACKED, page, PACKED_CONFIGURATION, and_mask, or_mask);
+  if (!ok) {
+    // Fallback: read-modify-write
+    std::vector<uint16_t> regs;
+    if (this->read_registers(CAT_PACKED, page, PACKED_CONFIGURATION, 1, regs) && regs.size() >= 1) {
+      uint16_t current = regs[0];
+      uint16_t next = (uint16_t) ((current & ~PACKED_CONFIGURATION_MODE_MASK) | (new_bits & PACKED_CONFIGURATION_MODE_MASK));
+      ESP_LOGW(TAG, "Preset masked write failed, fallback RMW: ch=%u cur=0x%04X next=0x%04X", (unsigned) channel, (unsigned) current, (unsigned) next);
+      ok = this->write_register(CAT_PACKED, page, PACKED_CONFIGURATION, next);
+    } else {
+      ESP_LOGW(TAG, "Preset masked write + RMW fallback both failed for ch=%u", (unsigned) channel);
+    }
+  }
+  if (ok) {
+    this->channels_[channel].mode = climate::CLIMATE_MODE_HEAT;
+    this->channels_[channel].preset = preset;
+    this->urgent_channels_.push_back(channel);
+    this->suspend_polling_until_ = millis() + 100;
+  } else {
+    ESP_LOGW(TAG, "Preset write failed for ch=%u", (unsigned) channel);
+  }
+}
+
+void WavinAHC9000::write_channel_comfort_temperature(uint8_t channel, float celsius) {
+  if (channel < 1 || channel > 16) return;
+  if (celsius < 5.0f) celsius = 5.0f;
+  if (celsius > 35.0f) celsius = 35.0f;
+  uint8_t page = (uint8_t) (channel - 1);
+  uint16_t raw = this->c_to_raw(celsius);
+  if (this->write_register(CAT_PACKED, page, PACKED_COMFORT_TEMPERATURE, raw)) {
+    this->channels_[channel].comfort_temp_c = celsius;
+    this->urgent_channels_.push_back(channel);
+    this->suspend_polling_until_ = millis() + 100;
+  }
+}
+
+void WavinAHC9000::write_channel_standby_temperature(uint8_t channel, float celsius) {
+  if (channel < 1 || channel > 16) return;
+  if (celsius < 5.0f) celsius = 5.0f;
+  if (celsius > 35.0f) celsius = 35.0f;
+  uint8_t page = (uint8_t) (channel - 1);
+  uint16_t raw = this->c_to_raw(celsius);
+  if (this->write_register(CAT_PACKED, page, PACKED_STANDBY_TEMPERATURE, raw)) {
+    this->channels_[channel].standby_temp_c = celsius;
+    this->urgent_channels_.push_back(channel);
+    this->suspend_polling_until_ = millis() + 100;
   }
 }
 
@@ -748,8 +877,25 @@ void WavinAHC9000::generate_yaml_suggestion() {
         if (this->read_registers(CAT_PACKED, page, PACKED_CONFIGURATION, 1, regs) && regs.size() >= 1) {
           uint16_t raw_cfg = regs[0];
           uint16_t mode_bits = raw_cfg & PACKED_CONFIGURATION_MODE_MASK;
-          bool is_off = (mode_bits == PACKED_CONFIGURATION_MODE_STANDBY) || (mode_bits == PACKED_CONFIGURATION_MODE_STANDBY_ALT);
-          st.mode = is_off ? climate::CLIMATE_MODE_OFF : climate::CLIMATE_MODE_HEAT;
+          switch (mode_bits) {
+            case PACKED_CONFIGURATION_MODE_STANDBY:
+            case PACKED_CONFIGURATION_MODE_STANDBY_ALT:
+              st.mode = climate::CLIMATE_MODE_OFF;
+              st.preset = climate::CLIMATE_PRESET_NONE;
+              break;
+            case PACKED_CONFIGURATION_MODE_ECO:
+              st.mode = climate::CLIMATE_MODE_HEAT;
+              st.preset = climate::CLIMATE_PRESET_ECO;
+              break;
+            case PACKED_CONFIGURATION_MODE_COMFORT:
+              st.mode = climate::CLIMATE_MODE_HEAT;
+              st.preset = climate::CLIMATE_PRESET_COMFORT;
+              break;
+            default:
+              st.mode = climate::CLIMATE_MODE_HEAT;
+              st.preset = climate::CLIMATE_PRESET_NONE;
+              break;
+          }
           st.child_lock = (raw_cfg & PACKED_CONFIGURATION_CHILD_LOCK_MASK) != 0;
         }
         if (this->read_registers(CAT_PACKED, page, PACKED_MANUAL_TEMPERATURE, 1, regs) && regs.size() >= 1) {
@@ -1238,6 +1384,49 @@ void WavinAHC9000::publish_updates() {
     }
   }
 
+  // Alarm sensors
+  for (auto &kv : this->alarm_low_sensors_) {
+    uint8_t ch = kv.first;
+    auto *s = kv.second;
+    if (!s) continue;
+    auto it = this->channels_.find(ch);
+    if (it != this->channels_.end() && !std::isnan(it->second.alarm_low_temp_c)) {
+      s->publish_state(it->second.alarm_low_temp_c);
+    }
+  }
+  for (auto &kv : this->alarm_high_sensors_) {
+    uint8_t ch = kv.first;
+    auto *s = kv.second;
+    if (!s) continue;
+    auto it = this->channels_.find(ch);
+    if (it != this->channels_.end() && !std::isnan(it->second.alarm_high_temp_c)) {
+      s->publish_state(it->second.alarm_high_temp_c);
+    }
+  }
+  for (auto &kv : this->alarm_binary_sensors_) {
+    uint8_t ch = kv.first;
+    auto *s = kv.second;
+    if (!s) continue;
+    auto it = this->channels_.find(ch);
+    if (it != this->channels_.end()) {
+      s->publish_state(it->second.alarm_flags != 0);
+    }
+  }
+  // Comfort/standby number entities
+  for (auto *n : this->comfort_numbers_) {
+    if (!n) continue;
+    auto it = this->channels_.find(n->get_channel());
+    if (it != this->channels_.end() && !std::isnan(it->second.comfort_temp_c)) {
+      n->publish_state(it->second.comfort_temp_c);
+    }
+  }
+  for (auto *n : this->standby_numbers_) {
+    if (!n) continue;
+    auto it = this->channels_.find(n->get_channel());
+    if (it != this->channels_.end() && !std::isnan(it->second.standby_temp_c)) {
+      n->publish_state(it->second.standby_temp_c);
+    }
+  }
   // Child lock switches
   for (auto &kv : this->child_lock_switches_) {
     uint8_t ch = kv.first;
@@ -1283,6 +1472,10 @@ climate::ClimateMode WavinAHC9000::get_channel_mode(uint8_t channel) const {
   auto it = this->channels_.find(channel);
   return it == this->channels_.end() ? climate::CLIMATE_MODE_HEAT : it->second.mode;
 }
+climate::ClimatePreset WavinAHC9000::get_channel_preset(uint8_t channel) const {
+  auto it = this->channels_.find(channel);
+  return it == this->channels_.end() ? climate::CLIMATE_PRESET_NONE : it->second.preset;
+}
 climate::ClimateAction WavinAHC9000::get_channel_action(uint8_t channel) const {
   auto it = this->channels_.find(channel);
   return it == this->channels_.end() ? climate::CLIMATE_ACTION_OFF : it->second.action;
@@ -1293,11 +1486,8 @@ climate::ClimateTraits WavinZoneClimate::traits() {
   climate::ClimateTraits t;
   
   t.set_supported_modes({climate::CLIMATE_MODE_HEAT, climate::CLIMATE_MODE_OFF});
-  
-  // deprecated -> replace
+  t.set_supported_presets({climate::CLIMATE_PRESET_NONE, climate::CLIMATE_PRESET_ECO, climate::CLIMATE_PRESET_COMFORT});
   t.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE);
-
-  // wrong constant -> fix
   t.add_feature_flags(climate::CLIMATE_SUPPORTS_ACTION);
   
   float vmin = 5.0f;
@@ -1336,6 +1526,25 @@ void WavinZoneClimate::control(const climate::ClimateCall &call) {
       ESP_LOGW(TAG, "Mode writes disabled by config; skipping write for %s", this->get_name().c_str());
     }
     this->mode = (m == climate::CLIMATE_MODE_OFF) ? climate::CLIMATE_MODE_OFF : climate::CLIMATE_MODE_HEAT;
+    // Switching to HEAT clears preset to NONE (manual mode)
+    if (m == climate::CLIMATE_MODE_HEAT) {
+      this->preset = climate::CLIMATE_PRESET_NONE;
+    }
+  }
+
+  // Preset control (ECO/COMFORT)
+  if (call.get_preset().has_value()) {
+    auto p = *call.get_preset();
+    ESP_LOGD(TAG, "CTRL: preset=%d for %s", (int) p, this->get_name().c_str());
+    if (this->parent_->get_allow_mode_writes()) {
+      if (this->single_channel_set_) {
+        this->parent_->write_channel_preset(this->single_channel_, p);
+      } else if (!this->members_.empty()) {
+        for (auto ch : this->members_) this->parent_->write_channel_preset(ch, p);
+      }
+    }
+    this->preset = p;
+    this->mode = climate::CLIMATE_MODE_HEAT;
   }
 
   // Target temperature
@@ -1420,6 +1629,7 @@ void WavinZoneClimate::update_from_parent() {
       if (!std::isnan(fmax)) this->target_temperature_high = fmax;
     }
     this->mode = this->parent_->get_channel_mode(ch);
+    this->preset = this->parent_->get_channel_preset(ch);
     // Action: derive from temperatures with a small deadband, fallback to controller bit
     const float db = 0.3f;  // hysteresis in °C
     auto raw_action = this->parent_->get_channel_action(ch);
@@ -1453,6 +1663,10 @@ void WavinZoneClimate::update_from_parent() {
     if (n_curr > 0) this->current_temperature = sum_curr / n_curr;
     if (!this->members_.empty()) this->target_temperature = sum_set / this->members_.size();
     this->mode = all_off ? climate::CLIMATE_MODE_OFF : climate::CLIMATE_MODE_HEAT;
+    // Group preset: use first member's preset (they should match when set as a group)
+    if (!this->members_.empty()) {
+      this->preset = this->parent_->get_channel_preset(this->members_[0]);
+    }
     // Group action: prefer temperature comparison with deadband, fallback to any member heating
     const float db = 0.3f;
     if (!std::isnan(this->current_temperature) && !std::isnan(this->target_temperature)) {
@@ -1468,6 +1682,16 @@ void WavinZoneClimate::update_from_parent() {
     }
   }
   this->publish_state();
+}
+
+void WavinSetpointNumber::control(float value) {
+  if (this->parent_ == nullptr) return;
+  if (this->type_ == COMFORT) {
+    this->parent_->write_channel_comfort_temperature(this->channel_, value);
+  } else {
+    this->parent_->write_channel_standby_temperature(this->channel_, value);
+  }
+  this->publish_state(value);
 }
 
 }  // namespace wavin_ahc9000

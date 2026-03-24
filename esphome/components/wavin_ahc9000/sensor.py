@@ -23,11 +23,17 @@ CONF_CHANNEL = "channel"
 
 CONF_TYPE = "type"
 
+SENSOR_TYPES = [
+    "battery", "temperature", "comfort_setpoint",
+    "floor_temperature", "floor_min_temperature", "floor_max_temperature",
+    "rssi", "alarm_low_temperature", "alarm_high_temperature",
+]
+
 CONFIG_SCHEMA = sensor.sensor_schema().extend(
     {
         cv.GenerateID(CONF_PARENT_ID): cv.use_id(WavinAHC9000),
         cv.Required(CONF_CHANNEL): cv.int_range(min=1, max=16),
-    cv.Required(CONF_TYPE): cv.one_of("battery", "temperature", "comfort_setpoint", "floor_temperature", "floor_min_temperature", "floor_max_temperature", "rssi", lower=True),
+        cv.Required(CONF_TYPE): cv.one_of(*SENSOR_TYPES, lower=True),
     }
 )
 
@@ -65,6 +71,10 @@ async def to_code(config):
         cg.add(hub.add_channel_floor_max_temperature_sensor(config[CONF_CHANNEL], sens))
     elif config[CONF_TYPE] == "rssi":
         cg.add(hub.add_channel_rssi_sensor(config[CONF_CHANNEL], sens))
+    elif config[CONF_TYPE] == "alarm_low_temperature":
+        cg.add(hub.add_channel_alarm_low_sensor(config[CONF_CHANNEL], sens))
+    elif config[CONF_TYPE] == "alarm_high_temperature":
+        cg.add(hub.add_channel_alarm_high_sensor(config[CONF_CHANNEL], sens))
     else:
         cg.add(hub.add_channel_temperature_sensor(config[CONF_CHANNEL], sens))
 
