@@ -1,6 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import binary_sensor
+from esphome.const import CONF_DEVICE_CLASS, DEVICE_CLASS_PROBLEM
 
 from . import WavinAHC9000
 
@@ -28,6 +29,8 @@ CONFIG_SCHEMA = cv.All(
 
 async def to_code(config):
     hub = await cg.get_variable(config[CONF_PARENT_ID])
+    if config[CONF_TYPE] == "alarm":
+        config.setdefault(CONF_DEVICE_CLASS, DEVICE_CLASS_PROBLEM)
     bs = await binary_sensor.new_binary_sensor(config)
     if config[CONF_TYPE] == "yaml_ready":
         cg.add(hub.set_yaml_ready_binary_sensor(bs))

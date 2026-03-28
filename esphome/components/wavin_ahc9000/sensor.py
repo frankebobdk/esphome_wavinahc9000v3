@@ -3,6 +3,7 @@ import esphome.config_validation as cv
 from esphome.components import sensor
 from esphome.const import (
     CONF_DEVICE_CLASS,
+    CONF_STATE_CLASS,
     CONF_UNIT_OF_MEASUREMENT,
     CONF_ICON,
     CONF_ACCURACY_DECIMALS,
@@ -13,6 +14,7 @@ from esphome.const import (
     ICON_BATTERY,
     DEVICE_CLASS_TEMPERATURE,
     UNIT_CELSIUS,
+    STATE_CLASS_MEASUREMENT,
 )
 
 from . import WavinAHC9000
@@ -42,6 +44,7 @@ async def to_code(config):
     hub = await cg.get_variable(config[CONF_PARENT_ID])
 
     # Inject defaults before new_sensor() reads them from config
+    config.setdefault(CONF_STATE_CLASS, STATE_CLASS_MEASUREMENT)
     if config[CONF_TYPE] == "battery":
         config.setdefault(CONF_DEVICE_CLASS, DEVICE_CLASS_BATTERY)
         config.setdefault(CONF_UNIT_OF_MEASUREMENT, UNIT_PERCENT)
