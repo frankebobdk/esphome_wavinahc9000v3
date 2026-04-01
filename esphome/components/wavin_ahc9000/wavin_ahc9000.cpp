@@ -37,17 +37,16 @@ void WavinAHC9000::setup() {
     this->tx_enable_pin_->digital_write(false);
   }
 
-  // Compute RS485 bus timing from baud rate.
+  // Compute RS485 bus timing from baud rate (uStepper RS485 module profile).
   // At 38400 baud: 1 frame (start + 8 data + stop) = 11 bits = ~286µs.
-  // post_tx_guard: 6× frame time ensures the last byte's stop bit is fully clocked out
-  // before we switch the transceiver from TX to RX mode. flush() returns when the
-  // software buffer is empty, but the hardware FIFO may still be shifting out the last byte.
-  // inter_frame_delay: 18× frame time (~5ms at 38400) gives the Wavin AHC-9000 time to
-  // process one response before the next request arrives.
+  // post_tx_guard: worst-case 12-byte frame plus 2-frame slack (~4ms at 38400) ensures
+  // the uStepper transceiver fully clocks out the last byte before switching to RX.
+  // inter_frame_delay: 4× frame time (~1.1ms, min 3ms) — uStepper handles shorter gaps.
   const uint32_t baud = 38400;  // AHC-9000 hardware constant
   const uint32_t frame_us = (11 * 1000000UL + baud - 1) / baud;  // ceil(11 bits / baud)
-  this->post_tx_guard_us_ = std::max<uint32_t>(frame_us * 6, 1500);
-  this->inter_frame_delay_us_ = std::max<uint32_t>(frame_us * 18, 5000);
+  const uint32_t worst_case_bytes = 12;
+  this->post_tx_guard_us_ = std::max<uint32_t>(frame_us * worst_case_bytes + frame_us * 2, 2500);
+  this->inter_frame_delay_us_ = std::max<uint32_t>(frame_us * 4, 3000);
 
   ESP_LOGCONFIG(TAG, "Wavin AHC9000 hub setup (baud=%u guard=%uus interframe=%uus)",
                 (unsigned) baud, (unsigned) this->post_tx_guard_us_,
@@ -1486,17 +1485,14 @@ climate::ClimateTraits WavinZoneClimate::traits() {
   climate::ClimateTraits t;
   
   t.set_supported_modes({climate::CLIMATE_MODE_HEAT, climate::CLIMATE_MODE_OFF});
-  t.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE);
-  t.add_feature_flags(climate::CLIMATE_SUPPORTS_ACTION);
-  
+  t.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE | climate::CLIMATE_SUPPORTS_ACTION);
+
   float vmin = 5.0f;
   float vmax = 35.0f;
-  
+
   // For comfort climates (using floor temperature), adopt current floor min/max when available
   if (this->single_channel_set_ && this->use_floor_temperature_) {
-
-    // deprecated -> replace
-    t.add_feature_flags(climate::CLIMATE_SUPPORTS_TWO_POINT_TARGET_TEMPERATURE);
+    t.add_feature_flags(climate::CLIMATE_REQUIRES_TWO_POINT_TARGET_TEMPERATURE);
 
     float fmin = this->parent_->get_channel_floor_min_temp(this->single_channel_);
     float fmax = this->parent_->get_channel_floor_max_temp(this->single_channel_);
