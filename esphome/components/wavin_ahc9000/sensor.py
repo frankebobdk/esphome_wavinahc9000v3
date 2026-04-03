@@ -3,7 +3,6 @@ import esphome.config_validation as cv
 from esphome.components import sensor
 from esphome.const import (
     CONF_DEVICE_CLASS,
-    CONF_STATE_CLASS,
     CONF_UNIT_OF_MEASUREMENT,
     CONF_ICON,
     CONF_ACCURACY_DECIMALS,
@@ -31,7 +30,9 @@ SENSOR_TYPES = [
     "rssi", "alarm_low_temperature", "alarm_high_temperature",
 ]
 
-CONFIG_SCHEMA = sensor.sensor_schema().extend(
+CONFIG_SCHEMA = sensor.sensor_schema(
+    state_class=STATE_CLASS_MEASUREMENT,
+).extend(
     {
         cv.GenerateID(CONF_PARENT_ID): cv.use_id(WavinAHC9000),
         cv.Required(CONF_CHANNEL): cv.int_range(min=1, max=16),
@@ -43,8 +44,7 @@ CONFIG_SCHEMA = sensor.sensor_schema().extend(
 async def to_code(config):
     hub = await cg.get_variable(config[CONF_PARENT_ID])
 
-    # Inject defaults before new_sensor() reads them from config
-    config.setdefault(CONF_STATE_CLASS, STATE_CLASS_MEASUREMENT)
+    # Inject per-type defaults before new_sensor() reads them from config
     if config[CONF_TYPE] == "battery":
         config.setdefault(CONF_DEVICE_CLASS, DEVICE_CLASS_BATTERY)
         config.setdefault(CONF_UNIT_OF_MEASUREMENT, UNIT_PERCENT)
