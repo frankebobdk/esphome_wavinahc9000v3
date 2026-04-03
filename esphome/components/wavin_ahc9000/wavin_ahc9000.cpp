@@ -68,9 +68,13 @@ std::string WavinAHC9000::get_channel_friendly_name(uint8_t channel) const {
 
 void WavinAHC9000::update() {
   // If polling is temporarily suspended (after a write), skip until window expires
-  if (this->suspend_polling_until_ != 0 && millis() < this->suspend_polling_until_) {
-    ESP_LOGV(TAG, "Polling suspended for %u ms more", (unsigned) (this->suspend_polling_until_ - millis()));
-    return;
+  if (this->suspend_polling_duration_ms_ != 0) {
+    if ((millis() - this->suspend_polling_start_) < this->suspend_polling_duration_ms_) {
+      ESP_LOGV(TAG, "Polling suspended for %u ms more",
+               (unsigned) (this->suspend_polling_duration_ms_ - (millis() - this->suspend_polling_start_)));
+      return;
+    }
+    this->suspend_polling_duration_ms_ = 0;
   }
 
   // Periodic diagnostics: heap and update timing
@@ -83,6 +87,17 @@ void WavinAHC9000::update() {
              (unsigned) esp_get_minimum_free_heap_size());
   }
   last_update_start = update_start;
+
+  // Wake-up ping: warm the RS485 transceiver after bus silence.
+  // The first TX after idle often gets lost (uStepper transceiver startup glitch).
+  // A throwaway read with a short timeout primes the bus for real reads.
+  {
+    std::vector<uint16_t> dummy;
+    uint32_t saved_timeout = this->receive_timeout_ms_;
+    this->receive_timeout_ms_ = 50;
+    this->read_registers(CAT_PACKED, 0, PACKED_CONFIGURATION, 1, dummy);
+    this->receive_timeout_ms_ = saved_timeout;
+  }
 
   // Process any urgent channels first (scheduled due to a write)
   std::vector<uint16_t> regs;
@@ -135,7 +150,7 @@ void WavinAHC9000::update() {
           if (this->write_register(CAT_PACKED, ch_page, PACKED_CONFIGURATION, next)) {
             // Schedule another quick check
             this->urgent_channels_.push_back(ch);
-            this->suspend_polling_until_ = millis() + 100;
+            this->suspend_polling_start_ = millis(); this->suspend_polling_duration_ms_ = 100;
           }
         } else {
           // Achieved desired mode; clear desire
@@ -457,7 +472,7 @@ bool WavinAHC9000::read_registers(uint8_t category, uint8_t page, uint8_t index,
         if (c < 0) break;
         buf.push_back((uint8_t) c);
         if (buf.size() >= 5) {
-          uint8_t expected = (uint8_t) (buf[2] + 5);
+          uint16_t expected = (uint16_t) buf[2] + 5;
           if (buf[0] == DEVICE_ADDR && buf[1] == FC_READ && buf.size() == expected) {
             uint16_t rcrc = crc16(buf.data(), buf.size());
             if (rcrc != 0) {
@@ -536,7 +551,7 @@ bool WavinAHC9000::write_register(uint8_t category, uint8_t page, uint8_t index,
         if (c < 0) break;
         buf.push_back((uint8_t) c);
         if (buf.size() >= 5) {
-          uint8_t expected = (uint8_t) (buf[2] + 5);
+          uint16_t expected = (uint16_t) buf[2] + 5;
           if (buf[0] == DEVICE_ADDR && buf[1] == FC_WRITE && buf.size() == expected) {
             uint16_t rcrc = crc16(buf.data(), buf.size());
             if (rcrc != 0) {
@@ -611,7 +626,7 @@ bool WavinAHC9000::write_masked_register(uint8_t category, uint8_t page, uint8_t
         if (c < 0) break;
         buf.push_back((uint8_t) c);
         if (buf.size() >= 5) {
-          uint8_t expected = (uint8_t) (buf[2] + 5);
+          uint16_t expected = (uint16_t) buf[2] + 5;
           if (buf[0] == DEVICE_ADDR && buf[1] == FC_WRITE_MASKED && buf.size() == expected) {
             uint16_t rcrc = crc16(buf.data(), buf.size());
             bool ok = (rcrc == 0);
@@ -649,7 +664,7 @@ void WavinAHC9000::write_channel_setpoint(uint8_t channel, float celsius) {
     this->channels_[channel].setpoint_c = celsius;
   // Schedule a quick refresh on next cycle and briefly suspend normal polling to avoid collisions
   this->urgent_channels_.push_back(channel);
-  this->suspend_polling_until_ = millis() + 100; // 100 ms guard
+  this->suspend_polling_start_ = millis(); this->suspend_polling_duration_ms_ = 100; // 100 ms guard
   }
 }
 
@@ -685,7 +700,7 @@ void WavinAHC9000::write_channel_mode(uint8_t channel, climate::ClimateMode mode
     this->channels_[channel].mode = (mode == climate::CLIMATE_MODE_OFF) ? climate::CLIMATE_MODE_OFF : climate::CLIMATE_MODE_HEAT;
     this->channels_[channel].preset = climate::CLIMATE_PRESET_NONE;
     this->urgent_channels_.push_back(channel);
-    this->suspend_polling_until_ = millis() + 100; // 100 ms guard
+    this->suspend_polling_start_ = millis(); this->suspend_polling_duration_ms_ = 100; // 100 ms guard
   } else {
     ESP_LOGW(TAG, "Mode write failed for ch=%u", (unsigned) channel);
   }
@@ -725,7 +740,7 @@ void WavinAHC9000::write_channel_preset(uint8_t channel, climate::ClimatePreset 
     this->channels_[channel].mode = climate::CLIMATE_MODE_HEAT;
     this->channels_[channel].preset = preset;
     this->urgent_channels_.push_back(channel);
-    this->suspend_polling_until_ = millis() + 100;
+    this->suspend_polling_start_ = millis(); this->suspend_polling_duration_ms_ = 100;
   } else {
     ESP_LOGW(TAG, "Preset write failed for ch=%u", (unsigned) channel);
   }
@@ -740,7 +755,7 @@ void WavinAHC9000::write_channel_comfort_temperature(uint8_t channel, float cels
   if (this->write_register(CAT_PACKED, page, PACKED_COMFORT_TEMPERATURE, raw)) {
     this->channels_[channel].comfort_temp_c = celsius;
     this->urgent_channels_.push_back(channel);
-    this->suspend_polling_until_ = millis() + 100;
+    this->suspend_polling_start_ = millis(); this->suspend_polling_duration_ms_ = 100;
   }
 }
 
@@ -753,17 +768,17 @@ void WavinAHC9000::write_channel_standby_temperature(uint8_t channel, float cels
   if (this->write_register(CAT_PACKED, page, PACKED_STANDBY_TEMPERATURE, raw)) {
     this->channels_[channel].standby_temp_c = celsius;
     this->urgent_channels_.push_back(channel);
-    this->suspend_polling_until_ = millis() + 100;
+    this->suspend_polling_start_ = millis(); this->suspend_polling_duration_ms_ = 100;
   }
 }
 
-void WavinAHC9000::write_channel_child_lock(uint8_t channel, bool enable) {
-  if (channel < 1 || channel > 16) return;
+bool WavinAHC9000::write_channel_child_lock(uint8_t channel, bool enable) {
+  if (channel < 1 || channel > 16) return false;
   uint8_t page = (uint8_t) (channel - 1);
   std::vector<uint16_t> regs;
   if (!this->read_registers(CAT_PACKED, page, PACKED_CONFIGURATION, 1, regs) || regs.size() < 1) {
     ESP_LOGW(TAG, "Child lock: read current config failed ch=%u", (unsigned) channel);
-    return;
+    return false;
   }
   uint16_t current = regs[0];
   uint16_t next;
@@ -773,16 +788,17 @@ void WavinAHC9000::write_channel_child_lock(uint8_t channel, bool enable) {
     next = (uint16_t) (current & ~PACKED_CONFIGURATION_CHILD_LOCK_MASK);
   if (next == current) {
     ESP_LOGD(TAG, "Child lock: no change ch=%u (enable=%s)", (unsigned) channel, enable?"true":"false");
-    return;
+    return true;
   }
   if (this->write_register(CAT_PACKED, page, PACKED_CONFIGURATION, next)) {
     this->channels_[channel].child_lock = enable;
     this->urgent_channels_.push_back(channel);
-    this->suspend_polling_until_ = millis() + 100;
+    this->suspend_polling_start_ = millis(); this->suspend_polling_duration_ms_ = 100;
     ESP_LOGI(TAG, "Child lock: set ch=%u -> %s (0x%04X)", (unsigned) channel, enable?"ENABLED":"DISABLED", (unsigned) next);
-  } else {
-    ESP_LOGW(TAG, "Child lock: write failed ch=%u", (unsigned) channel);
+    return true;
   }
+  ESP_LOGW(TAG, "Child lock: write failed ch=%u", (unsigned) channel);
+  return false;
 }
 
 void WavinAHC9000::write_channel_floor_min_temperature(uint8_t channel, float celsius) {
@@ -795,7 +811,7 @@ void WavinAHC9000::write_channel_floor_min_temperature(uint8_t channel, float ce
   if (this->write_register(CAT_PACKED, page, PACKED_FLOOR_MIN_TEMPERATURE, raw)) {
     this->channels_[channel].floor_min_c = celsius;
     this->urgent_channels_.push_back(channel);
-    this->suspend_polling_until_ = millis() + 100;
+    this->suspend_polling_start_ = millis(); this->suspend_polling_duration_ms_ = 100;
   }
 }
 
@@ -808,7 +824,7 @@ void WavinAHC9000::write_channel_floor_max_temperature(uint8_t channel, float ce
   if (this->write_register(CAT_PACKED, page, PACKED_FLOOR_MAX_TEMPERATURE, raw)) {
     this->channels_[channel].floor_max_c = celsius;
     this->urgent_channels_.push_back(channel);
-    this->suspend_polling_until_ = millis() + 100;
+    this->suspend_polling_start_ = millis(); this->suspend_polling_duration_ms_ = 100;
   }
 }
 
@@ -835,7 +851,7 @@ void WavinAHC9000::normalize_channel_config(uint8_t channel, bool off) {
   if (this->write_register(CAT_PACKED, page, PACKED_CONFIGURATION, value)) {
     ESP_LOGW(TAG, "Normalize (strict) applied: ch=%u -> 0x%04X", (unsigned) channel, (unsigned) value);
     this->urgent_channels_.push_back(channel);
-    this->suspend_polling_until_ = millis() + 100;
+    this->suspend_polling_start_ = millis(); this->suspend_polling_duration_ms_ = 100;
   } else {
     ESP_LOGW(TAG, "Normalize (strict) failed: write not acknowledged for ch=%u", (unsigned) channel);
   }
