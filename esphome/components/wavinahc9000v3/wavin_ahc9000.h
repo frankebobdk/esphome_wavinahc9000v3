@@ -64,6 +64,8 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   void add_channel_floor_min_temperature_sensor(uint8_t ch, sensor::Sensor *s);
   void add_channel_floor_max_temperature_sensor(uint8_t ch, sensor::Sensor *s);
   void add_channel_child_lock_switch(uint8_t ch, switch_::Switch *s) { this->child_lock_switches_[ch] = s; }
+  void add_comfort_number(WavinSetpointNumber *n);
+  void add_standby_number(WavinSetpointNumber *n);
   void add_active_channel(uint8_t ch);
 
   // Send commands
@@ -71,6 +73,8 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   void write_group_setpoint(const std::vector<uint8_t> &members, float celsius);
   void write_channel_mode(uint8_t channel, climate::ClimateMode mode);
   void write_channel_child_lock(uint8_t channel, bool enable);
+  void write_channel_comfort_temperature(uint8_t channel, float celsius);
+  void write_channel_standby_temperature(uint8_t channel, float celsius);
   // Write floor temperature limits (Celsius), clamped to sane bounds
   void write_channel_floor_min_temperature(uint8_t channel, float celsius);
   void write_channel_floor_max_temperature(uint8_t channel, float celsius);
@@ -148,6 +152,8 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   std::map<uint8_t, sensor::Sensor *> floor_max_temperature_sensors_;
   std::map<uint8_t, sensor::Sensor *> comfort_setpoint_sensors_;
   std::map<uint8_t, switch_::Switch *> child_lock_switches_;
+  std::vector<WavinSetpointNumber *> comfort_numbers_;
+  std::vector<WavinSetpointNumber *> standby_numbers_;
   std::vector<std::string> channel_friendly_names_; // 1-based index mapping (size >=17)
   std::vector<uint8_t> active_channels_;
   std::map<uint8_t, climate::ClimateMode> desired_mode_; // desired mode to reconcile after refresh
@@ -289,7 +295,12 @@ inline void WavinAHC9000::add_channel_floor_max_temperature_sensor(uint8_t ch, s
   this->floor_max_temperature_sensors_[ch] = s;
 }
 
-// numeric yaml_ready sensor removed
+inline void WavinAHC9000::add_comfort_number(WavinSetpointNumber *n) {
+  this->comfort_numbers_.push_back(n);
+}
+inline void WavinAHC9000::add_standby_number(WavinSetpointNumber *n) {
+  this->standby_numbers_.push_back(n);
+}
 
 class WavinZoneClimate : public climate::Climate, public Component {
  public:
@@ -321,20 +332,23 @@ class WavinZoneClimate : public climate::Climate, public Component {
   bool use_floor_temperature_{false};
 };
 
-// Repair button removed; use API service to normalize
+class WavinSetpointNumber : public number::Number, public Component {
+ public:
+  enum Type : uint8_t { COMFORT = 0, STANDBY = 1 };
+
+  void set_parent(WavinAHC9000 *p) { this->parent_ = p; }
+  void set_channel(uint8_t ch) { this->channel_ = ch; }
+  void set_type(Type t) { this->type_ = t; }
+  uint8_t get_channel() const { return this->channel_; }
+  Type get_type() const { return this->type_; }
+
+ protected:
+  void control(float value) override;
+
+  WavinAHC9000 *parent_{nullptr};
+  uint8_t channel_{0};
+  Type type_{COMFORT};
+};
 
 }  // namespace wavinahc9000v3
 }  // namespace esphome
-
-// --- Child lock extension placeholders (to integrate in subsequent patch) ---
-// NOTE: Full integration attempted earlier but patching context mismatched. The following
-// defines will be merged into the class on next edit cycle.
-// Child lock bit observed: PACKED_CONFIGURATION (index 0x07) changes from 0x4000 to 0x4800 when enabled => bit 0x0800.
-// Planned additions inside WavinAHC9000:
-//   - bool is_channel_child_locked(uint8_t ch) const;
-//   - void write_channel_child_lock(uint8_t ch, bool enable);
-//   - ChannelState::bool child_lock; // per-channel cache
-//   - std::map<uint8_t, switch_::Switch*> child_lock_switches_;
-//   - static constexpr uint16_t PACKED_CONFIGURATION_CHILD_LOCK_MASK = 0x0800;
-// Parsing: when reading PACKED_CONFIGURATION, set child_lock = (raw_cfg & mask) != 0.
-// Writing: read-modify-write preserving mode bits and baseline 0x4000 prefix.

@@ -1366,5 +1366,41 @@ void WavinYamlDumpButton::press_action() {
   }
 }
 
+void WavinAHC9000::write_channel_comfort_temperature(uint8_t channel, float celsius) {
+  if (channel < 1 || channel > 16) return;
+  if (celsius < 5.0f) celsius = 5.0f;
+  if (celsius > 35.0f) celsius = 35.0f;
+  uint8_t page = (uint8_t) (channel - 1);
+  uint16_t raw = this->c_to_raw(celsius);
+  if (this->write_register(CAT_PACKED, page, PACKED_COMFORT_TEMPERATURE, raw)) {
+    this->channels_[channel].comfort_temp_c = celsius;
+    this->urgent_channels_.push_back(channel);
+    this->suspend_polling_until_ = millis() + 100;
+  }
+}
+
+void WavinAHC9000::write_channel_standby_temperature(uint8_t channel, float celsius) {
+  if (channel < 1 || channel > 16) return;
+  if (celsius < 5.0f) celsius = 5.0f;
+  if (celsius > 35.0f) celsius = 35.0f;
+  uint8_t page = (uint8_t) (channel - 1);
+  uint16_t raw = this->c_to_raw(celsius);
+  if (this->write_register(CAT_PACKED, page, PACKED_STANDBY_TEMPERATURE, raw)) {
+    this->channels_[channel].standby_temp_c = celsius;
+    this->urgent_channels_.push_back(channel);
+    this->suspend_polling_until_ = millis() + 100;
+  }
+}
+
+void WavinSetpointNumber::control(float value) {
+  if (this->parent_ == nullptr) return;
+  if (this->type_ == COMFORT) {
+    this->parent_->write_channel_comfort_temperature(this->channel_, value);
+  } else {
+    this->parent_->write_channel_standby_temperature(this->channel_, value);
+  }
+  this->publish_state(value);
+}
+
 }  // namespace wavinahc9000v3
 }  // namespace esphome
