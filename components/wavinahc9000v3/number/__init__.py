@@ -3,9 +3,9 @@ import esphome.config_validation as cv
 from esphome.components import number
 from esphome.const import CONF_ID, CONF_NAME
 
-from . import WavinAHC9000, WavinSetpointNumber
+from .. import WavinAHC9000, WavinSetpointNumber
 
-CONF_PARENT_ID = "wavin_ahc9000_id"
+CONF_PARENT_ID = "wavinahc9000v3_id"
 CONF_CHANNEL = "channel"
 CONF_TYPE = "type"
 
@@ -27,9 +27,9 @@ async def to_code(config):
     cg.add(var.set_parent(hub))
     cg.add(var.set_channel(config[CONF_CHANNEL]))
     if config[CONF_TYPE] == "comfort":
-        cg.add(var.set_type(WavinSetpointNumber.enum("COMFORT")))
+        cg.add(var.set_type(WavinSetpointNumber.Type.COMFORT))
         cg.add(hub.add_comfort_number(var))
     else:
-        cg.add(var.set_type(WavinSetpointNumber.enum("STANDBY")))
+        cg.add(var.set_type(WavinSetpointNumber.Type.STANDBY))
         cg.add(hub.add_standby_number(var))
     cg.add(hub.add_active_channel(config[CONF_CHANNEL]))

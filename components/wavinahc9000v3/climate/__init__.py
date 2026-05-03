@@ -3,9 +3,9 @@ import esphome.config_validation as cv
 from esphome.components import climate
 from esphome.const import CONF_ID, CONF_NAME
 
-from . import WavinAHC9000, WavinZoneClimate
+from .. import WavinAHC9000, WavinZoneClimate
 
-CONF_PARENT_ID = "wavin_ahc9000_id"
+CONF_PARENT_ID = "wavinahc9000v3_id"
 CONF_CHANNEL = "channel"
 CONF_MEMBERS = "members"
 
@@ -14,26 +14,14 @@ CONF_STRICT_MODE_WRITES = "strict_mode_writes"
 
 CONF_USE_FLOOR_TEMPERATURE = "use_floor_temperature"
 
-def _validate_channel_or_members(config):
-    has_ch = CONF_CHANNEL in config
-    has_mem = CONF_MEMBERS in config
-    if not has_ch and not has_mem:
-        raise cv.Invalid("At least one of 'channel' or 'members' must be provided")
-    if has_ch and has_mem:
-        raise cv.Invalid("'channel' and 'members' are mutually exclusive")
-    return config
-
-CONFIG_SCHEMA = cv.All(
-    climate.climate_schema(WavinZoneClimate).extend(
-        {
-            cv.GenerateID(CONF_PARENT_ID): cv.use_id(WavinAHC9000),
-            cv.Optional(CONF_CHANNEL): cv.int_range(min=1, max=16),
-            cv.Optional(CONF_MEMBERS): cv.ensure_list(cv.int_range(min=1, max=16)),
-            cv.Optional(CONF_STRICT_MODE_WRITES, default=False): cv.boolean,
-            cv.Optional(CONF_USE_FLOOR_TEMPERATURE, default=False): cv.boolean,
-        }
-    ),
-    _validate_channel_or_members,
+CONFIG_SCHEMA = climate.climate_schema(WavinZoneClimate).extend(
+    {
+        cv.GenerateID(CONF_PARENT_ID): cv.use_id(WavinAHC9000),
+        cv.Optional(CONF_CHANNEL): cv.int_range(min=1, max=16),
+        cv.Optional(CONF_MEMBERS): cv.ensure_list(cv.int_range(min=1, max=16)),
+        cv.Optional(CONF_STRICT_MODE_WRITES, default=False): cv.boolean,
+        cv.Optional(CONF_USE_FLOOR_TEMPERATURE, default=False): cv.boolean,
+    }
 )
 
 
