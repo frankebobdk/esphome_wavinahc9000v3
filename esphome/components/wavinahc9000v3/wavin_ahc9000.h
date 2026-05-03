@@ -3,6 +3,7 @@
 #include "esphome/components/climate/climate.h"
 #include "esphome/components/uart/uart.h"
 #include "esphome/components/switch/switch.h"
+#include "esphome/components/number/number.h"
 #include "esphome/components/button/button.h"
 #include "esphome/core/component.h"
 
@@ -21,6 +22,7 @@ namespace wavinahc9000v3 {
 // Forward
 class WavinZoneClimate;
 class WavinChildLockSwitch;
+class WavinSetpointNumber;
 class WavinYamlDumpButton;
 class WavinRepairButton;
 
@@ -132,6 +134,8 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
     float floor_min_c{NAN};
     float floor_max_c{NAN};
     float setpoint_c{NAN};
+    float comfort_temp_c{NAN};
+    float standby_temp_c{NAN};
     climate::ClimateMode mode{climate::CLIMATE_MODE_HEAT};
     climate::ClimateAction action{climate::CLIMATE_ACTION_OFF};
     uint8_t battery_pct{255}; // 0..100; 255=unknown
@@ -201,6 +205,7 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   static constexpr uint8_t ELEM_BATTERY_STATUS = 0x0A;  // not used yet
 
   static constexpr uint8_t PACKED_MANUAL_TEMPERATURE = 0x00;
+  static constexpr uint8_t PACKED_COMFORT_TEMPERATURE = 0x01;
   static constexpr uint8_t PACKED_STANDBY_TEMPERATURE = 0x04;
   static constexpr uint8_t PACKED_CONFIGURATION = 0x07;
   // Inferred from field dump: floor min/max setpoints exposed in PACKED page
