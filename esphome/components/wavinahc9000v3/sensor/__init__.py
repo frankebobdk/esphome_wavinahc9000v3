@@ -1,7 +1,6 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import sensor
-from esphome.components.sensor import STATE_CLASS_MEASUREMENT
 from esphome.const import (
     CONF_DEVICE_CLASS,
     CONF_UNIT_OF_MEASUREMENT,
@@ -23,7 +22,7 @@ CONF_CHANNEL = "channel"
 CONF_TYPE = "type"
 
 CONFIG_SCHEMA = sensor.sensor_schema(
-    state_class=STATE_CLASS_MEASUREMENT,
+    state_class="measurement",
 ).extend(
     {
         cv.GenerateID(CONF_PARENT_ID): cv.use_id(WavinAHC9000),
