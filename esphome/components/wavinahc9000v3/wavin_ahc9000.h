@@ -222,8 +222,9 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   static constexpr uint16_t PACKED_CONFIGURATION_STRICT_UNLOCK_MASK = 0x0078; // bits 3..6 (avoid touching mode bits 0..2)
   static constexpr uint16_t PACKED_CONFIGURATION_CHILD_LOCK_MASK = 0x0800; // child lock bit (0x4000->0x4800)
 
-  // I/O reliability: number of attempts for read/write before escalating to WARN
-  static constexpr uint8_t IO_RETRY_ATTEMPTS = 3; // ESP32-C3 + uStepper: first TX after silence often fails
+  // I/O reliability: number of attempts before escalating to WARN
+  static constexpr uint8_t IO_RETRY_ATTEMPTS = 3;
+  static constexpr uint8_t IO_WRITE_RETRY_ATTEMPTS = 5;
 };
 
 // Simple dedicated switch subclass for child lock control. Avoids relying on codegen lambdas

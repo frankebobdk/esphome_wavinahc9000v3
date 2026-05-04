@@ -452,8 +452,7 @@ bool WavinAHC9000::read_registers(uint8_t category, uint8_t page, uint8_t index,
 }
 
 bool WavinAHC9000::write_register(uint8_t category, uint8_t page, uint8_t index, uint16_t value) {
-  // Similar retry strategy as read_registers() with severity gating.
-  for (uint8_t attempt = 0; attempt < IO_RETRY_ATTEMPTS; attempt++) {
+  for (uint8_t attempt = 0; attempt < IO_WRITE_RETRY_ATTEMPTS; attempt++) {
     this->inter_frame_delay_();
 
     uint8_t msg[10];
@@ -488,8 +487,8 @@ bool WavinAHC9000::write_register(uint8_t category, uint8_t page, uint8_t index,
             uint16_t rcrc = crc16(buf.data(), buf.size());
             bool ok = (rcrc == 0);
             if (!ok) {
-              if (attempt + 1 == IO_RETRY_ATTEMPTS) {
-                ESP_LOGW(TAG, "ACK-WR: CRC mismatch after %u attempts (cat=%u idx=%u page=%u)", (unsigned) IO_RETRY_ATTEMPTS, category, index, page);
+              if (attempt + 1 == IO_WRITE_RETRY_ATTEMPTS) {
+                ESP_LOGW(TAG, "ACK-WR: CRC mismatch after %u attempts (cat=%u idx=%u page=%u)", (unsigned) IO_WRITE_RETRY_ATTEMPTS, category, index, page);
               } else {
                 ESP_LOGD(TAG, "ACK-WR: CRC mismatch attempt %u -> retry", (unsigned) attempt + 1);
               }
@@ -500,11 +499,10 @@ bool WavinAHC9000::write_register(uint8_t category, uint8_t page, uint8_t index,
           }
         }
       }
-      // FIX: Tighter polling interval instead of delay(1) to avoid byte reception gaps
       delayMicroseconds(100);
     }
-    if (attempt + 1 == IO_RETRY_ATTEMPTS) {
-      ESP_LOGW(TAG, "ACK-WR: timeout after %u attempts (cat=%u idx=%u page=%u)", (unsigned) IO_RETRY_ATTEMPTS, category, index, page);
+    if (attempt + 1 == IO_WRITE_RETRY_ATTEMPTS) {
+      ESP_LOGW(TAG, "ACK-WR: timeout after %u attempts (cat=%u idx=%u page=%u)", (unsigned) IO_WRITE_RETRY_ATTEMPTS, category, index, page);
     } else {
       ESP_LOGD(TAG, "ACK-WR: timeout attempt %u (cat=%u idx=%u page=%u) -> retry", (unsigned) attempt + 1, category, index, page);
     }
@@ -514,8 +512,7 @@ bool WavinAHC9000::write_register(uint8_t category, uint8_t page, uint8_t index,
 }
 
 bool WavinAHC9000::write_masked_register(uint8_t category, uint8_t page, uint8_t index, uint16_t and_mask, uint16_t or_mask) {
-  // Similar retry strategy as write_register(); reduces spurious WARN logs.
-  for (uint8_t attempt = 0; attempt < IO_RETRY_ATTEMPTS; attempt++) {
+  for (uint8_t attempt = 0; attempt < IO_WRITE_RETRY_ATTEMPTS; attempt++) {
     this->inter_frame_delay_();
 
     uint8_t msg[12];
@@ -552,8 +549,8 @@ bool WavinAHC9000::write_masked_register(uint8_t category, uint8_t page, uint8_t
             uint16_t rcrc = crc16(buf.data(), buf.size());
             bool ok = (rcrc == 0);
             if (!ok) {
-              if (attempt + 1 == IO_RETRY_ATTEMPTS) {
-                ESP_LOGW(TAG, "ACK-WM: CRC mismatch after %u attempts (cat=%u idx=%u page=%u)", (unsigned) IO_RETRY_ATTEMPTS, category, index, page);
+              if (attempt + 1 == IO_WRITE_RETRY_ATTEMPTS) {
+                ESP_LOGW(TAG, "ACK-WM: CRC mismatch after %u attempts (cat=%u idx=%u page=%u)", (unsigned) IO_WRITE_RETRY_ATTEMPTS, category, index, page);
               } else {
                 ESP_LOGD(TAG, "ACK-WM: CRC mismatch attempt %u -> retry", (unsigned) attempt + 1);
               }
@@ -564,11 +561,10 @@ bool WavinAHC9000::write_masked_register(uint8_t category, uint8_t page, uint8_t
           }
         }
       }
-      // FIX: Tighter polling interval instead of delay(1) to avoid byte reception gaps
       delayMicroseconds(100);
     }
-    if (attempt + 1 == IO_RETRY_ATTEMPTS) {
-      ESP_LOGW(TAG, "ACK-WM: timeout after %u attempts (cat=%u idx=%u page=%u)", (unsigned) IO_RETRY_ATTEMPTS, category, index, page);
+    if (attempt + 1 == IO_WRITE_RETRY_ATTEMPTS) {
+      ESP_LOGW(TAG, "ACK-WM: timeout after %u attempts (cat=%u idx=%u page=%u)", (unsigned) IO_WRITE_RETRY_ATTEMPTS, category, index, page);
     } else {
       ESP_LOGD(TAG, "ACK-WM: timeout attempt %u (cat=%u idx=%u page=%u) -> retry", (unsigned) attempt + 1, category, index, page);
     }
