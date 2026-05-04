@@ -499,6 +499,7 @@ bool WavinAHC9000::write_register(uint8_t category, uint8_t page, uint8_t index,
           }
         }
       }
+      // FIX: Tighter polling interval instead of delay(1) to avoid byte reception gaps
       delayMicroseconds(100);
     }
     if (attempt + 1 == IO_WRITE_RETRY_ATTEMPTS) {
@@ -561,6 +562,7 @@ bool WavinAHC9000::write_masked_register(uint8_t category, uint8_t page, uint8_t
           }
         }
       }
+      // FIX: Tighter polling interval instead of delay(1) to avoid byte reception gaps
       delayMicroseconds(100);
     }
     if (attempt + 1 == IO_WRITE_RETRY_ATTEMPTS) {
