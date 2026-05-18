@@ -140,7 +140,9 @@ void WavinAHC9000::update() {
       bool is_off = (mode_bits == PACKED_CONFIGURATION_MODE_STANDBY) || (mode_bits == PACKED_CONFIGURATION_MODE_STANDBY_ALT);
       st.mode = is_off ? climate::CLIMATE_MODE_OFF : climate::CLIMATE_MODE_HEAT;
       st.child_lock = (raw_cfg & PACKED_CONFIGURATION_CHILD_LOCK_MASK) != 0;
-      ESP_LOGD(TAG, "CH%u cfg=0x%04X mode=%s child_lock=%s", (unsigned) ch, (unsigned) raw_cfg, is_off ? "OFF" : "HEAT", st.child_lock?"Y":"N");
+      st.control_lock = (raw_cfg & PACKED_CONFIGURATION_CTRL_LOCK_MASK) != 0;
+      st.service_menu_lock = (raw_cfg & PACKED_CONFIGURATION_INT_LOCK_MASK) != 0;
+      ESP_LOGD(TAG, "CH%u cfg=0x%04X mode=%s ctrl=%s int=%s", (unsigned) ch, (unsigned) raw_cfg, is_off ? "OFF" : "HEAT", st.control_lock?"Y":"N", st.service_menu_lock?"Y":"N");
       this->handle_standby_keepalive_(ch, is_off, keepalive_reassert);
       // Reconcile desired mode if pending and mismatch
       auto it_des = this->desired_mode_.find(ch);
@@ -232,7 +234,9 @@ void WavinAHC9000::update() {
             bool is_off = (mode_bits == PACKED_CONFIGURATION_MODE_STANDBY) || (mode_bits == PACKED_CONFIGURATION_MODE_STANDBY_ALT);
             st.mode = is_off ? climate::CLIMATE_MODE_OFF : climate::CLIMATE_MODE_HEAT;
             st.child_lock = (raw_cfg & PACKED_CONFIGURATION_CHILD_LOCK_MASK) != 0;
-            ESP_LOGD(TAG, "CH%u cfg=0x%04X mode=%s child_lock=%s", ch_num, (unsigned) raw_cfg, is_off ? "OFF" : "HEAT", st.child_lock?"Y":"N");
+            st.control_lock = (raw_cfg & PACKED_CONFIGURATION_CTRL_LOCK_MASK) != 0;
+            st.service_menu_lock = (raw_cfg & PACKED_CONFIGURATION_INT_LOCK_MASK) != 0;
+            ESP_LOGD(TAG, "CH%u cfg=0x%04X mode=%s ctrl=%s int=%s", ch_num, (unsigned) raw_cfg, is_off ? "OFF" : "HEAT", st.control_lock?"Y":"N", st.service_menu_lock?"Y":"N");
             this->handle_standby_keepalive_(ch_num, is_off, keepalive_reassert);
           } else {
             ESP_LOGW(TAG, "CH%u: mode read failed", ch_num);
@@ -659,6 +663,40 @@ void WavinAHC9000::write_channel_child_lock(uint8_t channel, bool enable) {
   }
 }
 
+bool WavinAHC9000::write_channel_config_bit(uint8_t channel, uint16_t bit_mask, bool enable) {
+  if (channel < 1 || channel > 16) return false;
+  if (bit_mask == 0) return false;
+  uint8_t page = (uint8_t) (channel - 1);
+  // AC-116 masked-write semantics (spec 4.5):
+  //   new = (current AND mask) OR (data AND NOT mask)
+  //   mask bit = 1 -> keep current bit; mask bit = 0 -> set bit to corresponding 'data' value.
+  // write_masked_register() places its first uint16 arg (named 'and_mask') at the data
+  // position on the wire and its second (named 'or_mask') at the mask position. The
+  // parameter names are historical and misleading; we pass values that match the spec
+  // regardless of names.
+  uint16_t data = enable ? bit_mask : 0x0000;
+  uint16_t mask = (uint16_t) ~bit_mask;  // keep every other bit; only this bit is overwritten
+  bool ok = this->write_masked_register(CAT_PACKED, page, PACKED_CONFIGURATION, data, mask);
+  if (ok) {
+    ESP_LOGI(TAG, "Config bit: ch=%u bit=0x%04X -> %s (masked write OK)", (unsigned) channel, (unsigned) bit_mask, enable ? "SET" : "CLEAR");
+    this->refresh_channel_now(channel);
+    this->suspend_polling_until_ = millis() + 100;
+  } else {
+    ESP_LOGW(TAG, "Config bit: ch=%u bit=0x%04X masked write FAILED", (unsigned) channel, (unsigned) bit_mask);
+  }
+  return ok;
+}
+
+void WavinConfigBitSwitch::write_state(bool state) {
+  if (this->parent_ == nullptr || this->bit_mask_ == 0) return;
+  bool ok = this->parent_->write_channel_config_bit(this->channel_, this->bit_mask_, state);
+  if (ok) {
+    // Optimistic publish only on ACK. Failed writes leave the UI showing the previous
+    // state until the polling readback confirms what the controller actually has.
+    this->publish_state(state);
+  }
+}
+
 void WavinAHC9000::handle_standby_keepalive_(uint8_t channel, bool is_off, std::vector<uint8_t> &reassert_list) {
   if (!this->standby_keepalive_enabled_()) {
     if (!is_off) this->standby_keepalive_deadlines_.erase(channel);
@@ -792,6 +830,8 @@ void WavinAHC9000::generate_yaml_suggestion() {
           bool is_off = (mode_bits == PACKED_CONFIGURATION_MODE_STANDBY) || (mode_bits == PACKED_CONFIGURATION_MODE_STANDBY_ALT);
           st.mode = is_off ? climate::CLIMATE_MODE_OFF : climate::CLIMATE_MODE_HEAT;
           st.child_lock = (raw_cfg & PACKED_CONFIGURATION_CHILD_LOCK_MASK) != 0;
+          st.control_lock = (raw_cfg & PACKED_CONFIGURATION_CTRL_LOCK_MASK) != 0;
+          st.service_menu_lock = (raw_cfg & PACKED_CONFIGURATION_INT_LOCK_MASK) != 0;
         }
         if (this->read_registers(CAT_PACKED, page, PACKED_MANUAL_TEMPERATURE, 1, regs) && regs.size() >= 1) {
           st.setpoint_c = this->raw_to_c(regs[0]);
@@ -1055,7 +1095,7 @@ void WavinAHC9000::publish_updates() {
     }
   }
 
-  // Child lock switches
+  // Child lock switches (legacy, bit 11)
   for (auto &kv : this->child_lock_switches_) {
     uint8_t ch = kv.first;
     auto *sw = kv.second;
@@ -1063,6 +1103,28 @@ void WavinAHC9000::publish_updates() {
     auto it = this->channels_.find(ch);
     if (it != this->channels_.end()) {
       sw->publish_state(it->second.child_lock);
+    }
+  }
+
+  // Diagnostic CTRL LOCK switches (bit 10 — display padlock per spec)
+  for (auto &kv : this->control_lock_switches_) {
+    uint8_t ch = kv.first;
+    auto *sw = kv.second;
+    if (!sw) continue;
+    auto it = this->channels_.find(ch);
+    if (it != this->channels_.end()) {
+      sw->publish_state(it->second.control_lock);
+    }
+  }
+
+  // Diagnostic INT LOCK switches (bit 11 — service menu lock per spec)
+  for (auto &kv : this->service_menu_lock_switches_) {
+    uint8_t ch = kv.first;
+    auto *sw = kv.second;
+    if (!sw) continue;
+    auto it = this->channels_.find(ch);
+    if (it != this->channels_.end()) {
+      sw->publish_state(it->second.service_menu_lock);
     }
   }
 

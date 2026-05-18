@@ -22,6 +22,7 @@ namespace wavinahc9000v3 {
 // Forward
 class WavinZoneClimate;
 class WavinChildLockSwitch;
+class WavinConfigBitSwitch;
 class WavinSetpointNumber;
 class WavinYamlDumpButton;
 class WavinRepairButton;
@@ -66,6 +67,10 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   void add_channel_floor_min_temperature_sensor(uint8_t ch, sensor::Sensor *s);
   void add_channel_floor_max_temperature_sensor(uint8_t ch, sensor::Sensor *s);
   void add_channel_child_lock_switch(uint8_t ch, switch_::Switch *s) { this->child_lock_switches_[ch] = s; }
+  // Diagnostic switches (added 2026-05 to validate CTRL LOCK vs INT LOCK bit assignment
+  // per AC-116 Modbus spec section 1.6.9 against the actual Wavin firmware variant).
+  void add_channel_control_lock_switch(uint8_t ch, switch_::Switch *s) { this->control_lock_switches_[ch] = s; }
+  void add_channel_service_menu_lock_switch(uint8_t ch, switch_::Switch *s) { this->service_menu_lock_switches_[ch] = s; }
   void add_comfort_number(WavinSetpointNumber *n);
   void add_standby_number(WavinSetpointNumber *n);
   void add_active_channel(uint8_t ch);
@@ -75,6 +80,9 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   void write_group_setpoint(const std::vector<uint8_t> &members, float celsius);
   void write_channel_mode(uint8_t channel, climate::ClimateMode mode);
   void write_channel_child_lock(uint8_t channel, bool enable);
+  // Masked write of a single bit in Packed Configuration register (cat 0x02 idx 0x07).
+  // Returns true if the controller ACKed the write. Used by the diagnostic lock switches.
+  bool write_channel_config_bit(uint8_t channel, uint16_t bit_mask, bool enable);
   void write_channel_comfort_temperature(uint8_t channel, float celsius);
   void write_channel_standby_temperature(uint8_t channel, float celsius);
   // Write floor temperature limits (Celsius), clamped to sane bounds
@@ -143,6 +151,12 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
     bool all_tp_lost{false};
     bool has_floor_sensor{false};
     bool child_lock{false};
+    // Diagnostic mirrors of the two lock bits in Packed Configuration (cat 0x02 idx 0x07).
+    // child_lock is kept for the legacy switch entity (bit 11). The bit-by-bit canonical
+    // labels per AC-116 spec 1.6.9 are CTRL LOCK (bit 10, padlock icon) and INT LOCK
+    // (bit 11, service menu lock).
+    bool control_lock{false};       // bit 10 (0x0400)
+    bool service_menu_lock{false};  // bit 11 (0x0800) — same source bit as child_lock
   };
 
   std::map<uint8_t, ChannelState> channels_;
@@ -156,6 +170,8 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   std::map<uint8_t, sensor::Sensor *> floor_max_temperature_sensors_;
   std::map<uint8_t, sensor::Sensor *> comfort_setpoint_sensors_;
   std::map<uint8_t, switch_::Switch *> child_lock_switches_;
+  std::map<uint8_t, switch_::Switch *> control_lock_switches_;
+  std::map<uint8_t, switch_::Switch *> service_menu_lock_switches_;
   std::vector<WavinSetpointNumber *> comfort_numbers_;
   std::vector<WavinSetpointNumber *> standby_numbers_;
   std::vector<std::string> channel_friendly_names_; // 1-based index mapping (size >=17)
@@ -220,7 +236,10 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   static constexpr uint16_t PACKED_CONFIGURATION_PROGRAM_BIT = 0x0008; // suspected schedule/program flag
   static constexpr uint16_t PACKED_CONFIGURATION_PROGRAM_MASK = 0x0018; // extended clear: bits 3 and 4
   static constexpr uint16_t PACKED_CONFIGURATION_STRICT_UNLOCK_MASK = 0x0078; // bits 3..6 (avoid touching mode bits 0..2)
-  static constexpr uint16_t PACKED_CONFIGURATION_CHILD_LOCK_MASK = 0x0800; // child lock bit (0x4000->0x4800)
+  static constexpr uint16_t PACKED_CONFIGURATION_CHILD_LOCK_MASK = 0x0800; // legacy alias for INT LOCK bit (0x0800)
+  // AC-116 spec 1.6.9: bit 10 = CTRL LOCK (display padlock); bit 11 = INT LOCK (service menu only)
+  static constexpr uint16_t PACKED_CONFIGURATION_CTRL_LOCK_MASK = 0x0400;
+  static constexpr uint16_t PACKED_CONFIGURATION_INT_LOCK_MASK = 0x0800;
 
   // I/O reliability: number of attempts before escalating to WARN
   static constexpr uint8_t IO_RETRY_ATTEMPTS = 3;
@@ -264,6 +283,23 @@ class WavinChildLockSwitch : public switch_::Switch {
   }
   WavinAHC9000 *parent_{nullptr};
   uint8_t channel_{0};
+};
+
+// Diagnostic switch for a single bit in PACKED_CONFIGURATION (cat 0x02 idx 0x07).
+// Uses masked write (FC 0x45) so only the targeted bit is touched — no RMW race, no
+// collateral damage to surrounding bits. Publishes optimistic state only when the
+// controller ACKs the write; otherwise the polling readback reconciles the UI to the
+// actual register value on the next update cycle.
+class WavinConfigBitSwitch : public switch_::Switch {
+ public:
+  void set_parent(WavinAHC9000 *p) { this->parent_ = p; }
+  void set_channel(uint8_t ch) { this->channel_ = ch; }
+  void set_bit_mask(uint16_t m) { this->bit_mask_ = m; }
+ protected:
+  void write_state(bool state) override;
+  WavinAHC9000 *parent_{nullptr};
+  uint8_t channel_{0};
+  uint16_t bit_mask_{0};
 };
 
 class WavinYamlDumpButton : public button::Button {
