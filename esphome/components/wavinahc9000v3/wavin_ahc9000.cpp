@@ -124,6 +124,21 @@ void WavinAHC9000::update() {
     return;
   }
 
+  // FIX B (Symptom 2 / Espressif #12568 mitigation): wake-up read at the top of each
+  // cycle. On ESP32-C3 with flow_control_pin on the uart: block, the IDF UART driver's
+  // half-duplex RS485 mode has a documented bug where the first frame after bus idle
+  // is lost ~75% of the time at 38400 baud. A throwaway read here absorbs that first-
+  // frame loss on a register we discard. read_registers() will retry up to
+  // IO_RETRY_ATTEMPTS times internally — by the time it returns (success or fail) the
+  // peripheral and transceiver are warm and subsequent reads in this cycle land on
+  // the first attempt. Net win: ~150-300 ms spent on the wakeup saves ~600 ms per
+  // failed-first-attempt across the urgent + round-robin reads.
+  {
+    std::vector<uint16_t> wakeup_regs;
+    this->read_registers(CAT_PACKED, 0, PACKED_MANUAL_TEMPERATURE, 1, wakeup_regs);
+    // Result intentionally discarded; this is purely peripheral warming.
+  }
+
   // Process any urgent channels first (scheduled due to a write)
   std::vector<uint16_t> regs;
   uint8_t urgent_processed = 0;
