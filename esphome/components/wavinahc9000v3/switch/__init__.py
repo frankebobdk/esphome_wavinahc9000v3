@@ -15,6 +15,7 @@ WavinConfigBitSwitch = ns.class_("WavinConfigBitSwitch", switch.Switch)
 TYPE_BIT_MASKS = {
     "control_lock": 0x0400,       # bit 10 — display padlock ("user can't change anything")
     "service_menu_lock": 0x0800,  # bit 11 — INT LOCK ("user can't enter service menu")
+    "floor_sensor": 0x4000,       # bit 14 — FLOOR ENA, drives the "floor sensor active" dash icon
 }
 
 CONFIG_SCHEMA = cv.typed_schema(
@@ -32,6 +33,12 @@ CONFIG_SCHEMA = cv.typed_schema(
             }
         ),
         "service_menu_lock": switch.switch_schema(WavinConfigBitSwitch).extend(
+            {
+                cv.GenerateID(CONF_PARENT_ID): cv.use_id(WavinAHC9000),
+                cv.Required(CONF_CHANNEL): cv.int_range(min=1, max=16),
+            }
+        ),
+        "floor_sensor": switch.switch_schema(WavinConfigBitSwitch).extend(
             {
                 cv.GenerateID(CONF_PARENT_ID): cv.use_id(WavinAHC9000),
                 cv.Required(CONF_CHANNEL): cv.int_range(min=1, max=16),
@@ -59,3 +66,6 @@ async def to_code(config):
     elif typ == "service_menu_lock":
         cg.add(var.set_bit_mask(TYPE_BIT_MASKS[typ]))
         cg.add(hub.add_channel_service_menu_lock_switch(ch, var))
+    elif typ == "floor_sensor":
+        cg.add(var.set_bit_mask(TYPE_BIT_MASKS[typ]))
+        cg.add(hub.add_channel_floor_sensor_switch(ch, var))

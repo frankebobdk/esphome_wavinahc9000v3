@@ -71,6 +71,10 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   // per AC-116 Modbus spec section 1.6.9 against the actual Wavin firmware variant).
   void add_channel_control_lock_switch(uint8_t ch, switch_::Switch *s) { this->control_lock_switches_[ch] = s; }
   void add_channel_service_menu_lock_switch(uint8_t ch, switch_::Switch *s) { this->service_menu_lock_switches_[ch] = s; }
+  // FLOOR ENA (bit 14) toggle. Required because the pre-cleanup write_channel_mode used
+  // a 0x4000 baseline that set this bit on every mode toggle. Exposed here so users on
+  // thermostat variants without a local Fl menu can clear it from HA.
+  void add_channel_floor_sensor_switch(uint8_t ch, switch_::Switch *s) { this->floor_sensor_switches_[ch] = s; }
   void add_comfort_number(WavinSetpointNumber *n);
   void add_standby_number(WavinSetpointNumber *n);
   void add_active_channel(uint8_t ch);
@@ -157,6 +161,7 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
     // (bit 11, service menu lock).
     bool control_lock{false};       // bit 10 (0x0400)
     bool service_menu_lock{false};  // bit 11 (0x0800) — same source bit as child_lock
+    bool floor_sensor_active{false}; // bit 14 (0x4000) — drives the "floor sensor active" dash icon
   };
 
   std::map<uint8_t, ChannelState> channels_;
@@ -172,6 +177,7 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   std::map<uint8_t, switch_::Switch *> child_lock_switches_;
   std::map<uint8_t, switch_::Switch *> control_lock_switches_;
   std::map<uint8_t, switch_::Switch *> service_menu_lock_switches_;
+  std::map<uint8_t, switch_::Switch *> floor_sensor_switches_;
   std::vector<WavinSetpointNumber *> comfort_numbers_;
   std::vector<WavinSetpointNumber *> standby_numbers_;
   std::vector<std::string> channel_friendly_names_; // 1-based index mapping (size >=17)
@@ -240,6 +246,7 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   // AC-116 spec 1.6.9: bit 10 = CTRL LOCK (display padlock); bit 11 = INT LOCK (service menu only)
   static constexpr uint16_t PACKED_CONFIGURATION_CTRL_LOCK_MASK = 0x0400;
   static constexpr uint16_t PACKED_CONFIGURATION_INT_LOCK_MASK = 0x0800;
+  static constexpr uint16_t PACKED_CONFIGURATION_FLOOR_ENA_MASK = 0x4000;
 
   // I/O reliability: number of attempts before escalating to WARN
   static constexpr uint8_t IO_RETRY_ATTEMPTS = 3;

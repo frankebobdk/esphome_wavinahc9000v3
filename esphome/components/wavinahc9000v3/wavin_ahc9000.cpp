@@ -142,6 +142,7 @@ void WavinAHC9000::update() {
       st.child_lock = (raw_cfg & PACKED_CONFIGURATION_CHILD_LOCK_MASK) != 0;
       st.control_lock = (raw_cfg & PACKED_CONFIGURATION_CTRL_LOCK_MASK) != 0;
       st.service_menu_lock = (raw_cfg & PACKED_CONFIGURATION_INT_LOCK_MASK) != 0;
+      st.floor_sensor_active = (raw_cfg & PACKED_CONFIGURATION_FLOOR_ENA_MASK) != 0;
       ESP_LOGD(TAG, "CH%u cfg=0x%04X mode=%s ctrl=%s int=%s", (unsigned) ch, (unsigned) raw_cfg, is_off ? "OFF" : "HEAT", st.control_lock?"Y":"N", st.service_menu_lock?"Y":"N");
       this->handle_standby_keepalive_(ch, is_off, keepalive_reassert);
       // Reconcile desired mode if pending and mismatch
@@ -236,6 +237,7 @@ void WavinAHC9000::update() {
             st.child_lock = (raw_cfg & PACKED_CONFIGURATION_CHILD_LOCK_MASK) != 0;
             st.control_lock = (raw_cfg & PACKED_CONFIGURATION_CTRL_LOCK_MASK) != 0;
             st.service_menu_lock = (raw_cfg & PACKED_CONFIGURATION_INT_LOCK_MASK) != 0;
+      st.floor_sensor_active = (raw_cfg & PACKED_CONFIGURATION_FLOOR_ENA_MASK) != 0;
             ESP_LOGD(TAG, "CH%u cfg=0x%04X mode=%s ctrl=%s int=%s", ch_num, (unsigned) raw_cfg, is_off ? "OFF" : "HEAT", st.control_lock?"Y":"N", st.service_menu_lock?"Y":"N");
             this->handle_standby_keepalive_(ch_num, is_off, keepalive_reassert);
           } else {
@@ -803,6 +805,7 @@ void WavinAHC9000::generate_yaml_suggestion() {
           st.child_lock = (raw_cfg & PACKED_CONFIGURATION_CHILD_LOCK_MASK) != 0;
           st.control_lock = (raw_cfg & PACKED_CONFIGURATION_CTRL_LOCK_MASK) != 0;
           st.service_menu_lock = (raw_cfg & PACKED_CONFIGURATION_INT_LOCK_MASK) != 0;
+      st.floor_sensor_active = (raw_cfg & PACKED_CONFIGURATION_FLOOR_ENA_MASK) != 0;
         }
         if (this->read_registers(CAT_PACKED, page, PACKED_MANUAL_TEMPERATURE, 1, regs) && regs.size() >= 1) {
           st.setpoint_c = this->raw_to_c(regs[0]);
@@ -1096,6 +1099,17 @@ void WavinAHC9000::publish_updates() {
     auto it = this->channels_.find(ch);
     if (it != this->channels_.end()) {
       sw->publish_state(it->second.service_menu_lock);
+    }
+  }
+
+  // Diagnostic FLOOR ENA switches (bit 14 — drives the "floor sensor active" dash icon)
+  for (auto &kv : this->floor_sensor_switches_) {
+    uint8_t ch = kv.first;
+    auto *sw = kv.second;
+    if (!sw) continue;
+    auto it = this->channels_.find(ch);
+    if (it != this->channels_.end()) {
+      sw->publish_state(it->second.floor_sensor_active);
     }
   }
 
