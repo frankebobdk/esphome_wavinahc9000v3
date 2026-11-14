@@ -46,44 +46,41 @@ void WavinAHC9000::setup() {
   const uint32_t bits_per_frame = 11;
   const uint32_t frame_us = (bits_per_frame * 1000000UL + baud - 1) / baud;  // ceil division
 
-  // FIX: Always flush RX before TX when using half-duplex RS485 (flow control pin set)
-  // This prevents stale echo bytes from corrupting response parsing.
-  if (this->flow_control_pin_ != nullptr || this->tx_enable_pin_ != nullptr) {
-    this->flush_rx_before_tx_ = true;
-  }
+  // Transport timing ported from upstream wavinahc9000v4 (1.0.2-stable).
+  // Stale RX bytes are always dropped before transmitting - the only point
+  // at which discarding is safe.
+  this->flush_rx_before_tx_ = true;
+  // A combined DE/RE pin (or the UART driver's own RS485 mode) mutes the receiver
+  // while transmitting, so no echo of our own frame comes back. A bare
+  // tx_enable_pin leaves the receiver on.
+  this->expect_echo_ = (this->tx_enable_pin_ != nullptr && this->flow_control_pin_ == nullptr);
 
-  switch (this->module_profile_) {
-    case ModuleProfile::MODULE_USTEPPER: {
-      // uStepper RS485 hat needs extra guard time; approximate 12-byte frame plus slack.
-      const uint32_t worst_case_bytes = 12;
-      const uint32_t computed_guard = frame_us * worst_case_bytes + frame_us * 2;
-      this->pre_tx_delay_us_ = std::max<uint32_t>(frame_us / 2, 100);
-      this->post_tx_guard_us_ = std::max<uint32_t>(computed_guard, 2500);
-      this->inter_frame_delay_us_ = std::max<uint32_t>(frame_us * 4, 3000);
-      break;
-    }
-    case ModuleProfile::MODULE_DEFAULT:
-    default:
-      // FIX: Increased post-TX guard for ESP32-C3 at 38400 baud.
-      // At 38400 baud, one byte frame = ~286us. A 12-byte TX message takes ~3430us.
-      // The UART flush() may return before the last byte's stop bit is clocked out.
-      // We need enough guard time for the last byte to finish plus transceiver turnaround.
-      // Using 6x frame time (~1716us, min 1500us) to ensure the complete last byte + stop
-      // bit is on the wire before we switch the transceiver direction.
-      this->pre_tx_delay_us_ = std::max<uint32_t>(frame_us / 2, 50);
-      this->post_tx_guard_us_ = std::max<uint32_t>(frame_us * 6, 1500);
-      // FIX: Inter-frame delay ensures the Wavin controller has time to process one
-      // response before the next request arrives. The AHC-9000 needs ~5ms between
-      // consecutive transactions to avoid missed responses.
-      this->inter_frame_delay_us_ = std::max<uint32_t>(frame_us * 18, 5000);
-      break;
+  // The driver must be released as soon as the last stop bit is out, because
+  // the controller can answer a few ms later. flush() has already waited for
+  // the FIFO, so this only covers transceiver turnaround.
+  this->pre_tx_delay_us_ = std::max<uint32_t>(frame_us / 4, 20);
+  this->post_tx_guard_us_ = std::max<uint32_t>(frame_us / 2, 60);
+  // Silence between transactions so the controller can finish with the last one.
+  this->inter_frame_delay_us_ = std::max<uint32_t>(frame_us * 7, 2000);
+  // A gap this long after bytes have started means the frame has ended.
+  this->rx_gap_us_ = std::max<uint32_t>(frame_us * 4, 1200);
+
+  if (this->module_profile_ == ModuleProfile::MODULE_USTEPPER) {
+    // Slower opto-isolated transceivers need a little more turnaround, but
+    // still nothing like a whole frame time: holding the driver on past the
+    // start of the reply is what loses replies.
+    this->pre_tx_delay_us_ = std::max<uint32_t>(frame_us / 2, 50);
+    this->post_tx_guard_us_ = std::max<uint32_t>(frame_us, 150);
+    this->inter_frame_delay_us_ = std::max<uint32_t>(frame_us * 10, 3000);
   }
 
   const char *profile = (this->module_profile_ == ModuleProfile::MODULE_USTEPPER) ? "ustepper" : "default";
-  ESP_LOGCONFIG(TAG, "Wavin AHC9000 hub setup (baud=%u module=%s guard=%uus pre=%uus interframe=%uus flush_rx=%s)",
+  ESP_LOGCONFIG(TAG, "Wavin AHC9000 hub setup (baud=%u module=%s guard=%uus pre=%uus interframe=%uus "
+                "rx_gap=%uus timeout=%ums echo=%s)",
                 (unsigned) baud, profile, (unsigned) this->post_tx_guard_us_,
                 (unsigned) this->pre_tx_delay_us_, (unsigned) this->inter_frame_delay_us_,
-                this->flush_rx_before_tx_ ? "yes" : "no");
+                (unsigned) this->rx_gap_us_, (unsigned) this->receive_timeout_ms_,
+                this->expect_echo_ ? "yes" : "no");
 }
 void WavinAHC9000::loop() {}
 
@@ -116,6 +113,15 @@ std::string WavinAHC9000::get_channel_friendly_name(uint8_t channel) const {
 }
 
 void WavinAHC9000::update() {
+  // Periodic bus health line, so link quality is visible without DEBUG logging.
+  {
+    const uint32_t now_ms = millis();
+    if (this->bus_log_due_ == 0) this->bus_log_due_ = now_ms + BUS_STATS_INTERVAL_MS;
+    if ((int32_t) (now_ms - this->bus_log_due_) >= 0) {
+      this->log_bus_stats_();
+      this->bus_log_due_ = now_ms + BUS_STATS_INTERVAL_MS;
+    }
+  }
   std::vector<uint8_t> keepalive_reassert;
   keepalive_reassert.reserve(4);
   // If polling is temporarily suspended (after a write), skip until window expires
@@ -389,10 +395,96 @@ void WavinAHC9000::add_active_channel(uint8_t ch) {
 
 // Repair functions removed; use normalize_channel_config via API service
 
+// Reads one reply frame (ported from upstream wavinahc9000v4).
+//
+// The previous inline loops required the very first byte received to be the
+// device address, so a single stray byte - which half-duplex RS-485 turnaround
+// produces routinely - made the whole attempt unmatchable and cost a full
+// timeout. This slides past leading rubbish until a plausible header appears,
+// validates the length against what was asked for instead of trusting the
+// wire, and gives up as soon as the line has been quiet for longer than a few
+// character times rather than waiting out the whole deadline.
+bool WavinAHC9000::receive_frame_(uint8_t function_code, uint8_t expected_payload_bytes,
+                                  std::vector<uint8_t> &frame) {
+  const uint32_t start_ms = millis();
+  const uint32_t total_len = (uint32_t) expected_payload_bytes + 5;  // addr fc len <payload> crc16
+  uint32_t last_byte_us = micros();
+  bool seen_any = false;
+
+  frame.clear();
+  while (millis() - start_ms < this->receive_timeout_ms_) {  // wraparound-safe
+    while (this->available()) {
+      int c = this->read();
+      if (c < 0) break;
+      last_byte_us = micros();
+      if (!seen_any) {
+        seen_any = true;
+        uint32_t dt = last_byte_us - this->tx_done_us_;
+        if (dt < 1000000UL) {  // ignore nonsense if micros() wrapped
+          this->bus_.reply_us_sum += dt;
+          this->bus_.reply_count++;
+          if (dt < this->bus_.reply_us_min) this->bus_.reply_us_min = dt;
+          if (dt > this->bus_.reply_us_max) this->bus_.reply_us_max = dt;
+        }
+      }
+      frame.push_back((uint8_t) c);
+
+      // Resynchronise: drop bytes until the header looks like our reply.
+      while (!frame.empty() && frame[0] != DEVICE_ADDR) {
+        frame.erase(frame.begin());
+        this->bus_.resyncs++;
+      }
+      if (frame.size() >= 2 && frame[1] != function_code) {
+        frame.erase(frame.begin());
+        this->bus_.resyncs++;
+        continue;
+      }
+      if (frame.size() >= 3 && frame[2] != expected_payload_bytes) {
+        // Length byte disagrees with the request - this is not our frame.
+        frame.erase(frame.begin());
+        this->bus_.resyncs++;
+        continue;
+      }
+      if (frame.size() == total_len) {
+        if (crc16(frame.data(), frame.size()) == 0) return true;
+        this->bus_.crc_errors++;
+        ESP_LOGD(TAG, "RX: CRC mismatch (len=%u)", (unsigned) frame.size());
+        return false;
+      }
+    }
+    // Once a plausible frame has started, a gap longer than a few character
+    // times means it is over (or was truncated); stop waiting.
+    // Deviation from v4 (which tests seen_any): a discarded stray byte must not
+    // end the wait, or the retry would be transmitted on top of the real reply
+    // that the controller sends 3-39 ms after the request.
+    if (!frame.empty() && (micros() - last_byte_us) > this->rx_gap_us_) break;
+    delayMicroseconds(50);
+  }
+  if (!frame.empty()) {
+    ESP_LOGD(TAG, "RX: incomplete frame (%u of %u bytes)", (unsigned) frame.size(), (unsigned) total_len);
+  }
+  this->bus_.timeouts++;
+  return false;
+}
+
+void WavinAHC9000::log_bus_stats_() {
+  const auto &b = this->bus_;
+  uint32_t avg = b.reply_count ? (uint32_t) (b.reply_us_sum / b.reply_count) : 0;
+  ESP_LOGI(TAG,
+           "bus: tx=%u retry=%u fail=%u timeout=%u crc=%u resync=%u drop_pre=%u drop_post=%u "
+           "reply_us min=%u avg=%u max=%u",
+           (unsigned) b.transactions, (unsigned) b.retries, (unsigned) b.failures, (unsigned) b.timeouts,
+           (unsigned) b.crc_errors, (unsigned) b.resyncs, (unsigned) b.discarded_pre_tx,
+           (unsigned) b.discarded_post_tx, (unsigned) (b.reply_count ? b.reply_us_min : 0), (unsigned) avg,
+           (unsigned) b.reply_us_max);
+}
+
 bool WavinAHC9000::read_registers(uint8_t category, uint8_t page, uint8_t index, uint8_t count, std::vector<uint16_t> &out) {
   // Retry logic: attempt up to IO_RETRY_ATTEMPTS. First attempt failures are logged at DEBUG; only the
   // final failed attempt escalates to WARN to reduce log noise from transient bus glitches.
+  this->bus_.transactions++;
   for (uint8_t attempt = 0; attempt < IO_RETRY_ATTEMPTS; attempt++) {
+    if (attempt > 0) this->bus_.retries++;
     // FIX: Inter-frame delay before each transaction to allow bus turnaround
     this->inter_frame_delay_();
 
@@ -409,56 +501,35 @@ bool WavinAHC9000::read_registers(uint8_t category, uint8_t page, uint8_t index,
 
     this->prepare_for_tx_();
     ESP_LOGD(TAG, "TX: addr=0x%02X fc=0x%02X cat=%u idx=%u page=%u cnt=%u attempt=%u", msg[0], msg[1], category, index, page, count, (unsigned) attempt + 1);
+    this->tx_len_ = 8;
     this->write_array(msg, 8);
     this->flush();
     this->finish_tx_();
 
-    std::vector<uint8_t> buf;
-    uint32_t start = millis();
-    while (millis() - start < this->receive_timeout_ms_) {
-      while (this->available()) {
-        int c = this->read();
-        if (c < 0) break;
-        buf.push_back((uint8_t) c);
-        if (buf.size() >= 5) {
-          uint8_t expected = (uint8_t) (buf[2] + 5);
-          if (buf[0] == DEVICE_ADDR && buf[1] == FC_READ && buf.size() == expected) {
-            uint16_t rcrc = crc16(buf.data(), buf.size());
-            if (rcrc != 0) {
-              // CRC mismatch: retry unless last attempt
-              if (attempt + 1 == IO_RETRY_ATTEMPTS) {
-                ESP_LOGW(TAG, "RX: CRC mismatch (len=%u) after %u attempts", (unsigned) buf.size(), (unsigned) IO_RETRY_ATTEMPTS);
-              } else {
-                ESP_LOGD(TAG, "RX: CRC mismatch attempt %u (len=%u) -> retry", (unsigned) attempt + 1, (unsigned) buf.size());
-              }
-              goto next_attempt; // break both loops, retry
-            }
-            uint8_t bytes = buf[2];
-            out.clear();
-            for (uint8_t i = 0; i + 1 < bytes; i += 2) {
-              uint16_t w = (uint16_t) (buf[3 + i] << 8) | buf[3 + i + 1];
-              out.push_back(w);
-            }
-            return true;
-          }
-        }
+    std::vector<uint8_t> frame;
+    if (this->receive_frame_(FC_READ, (uint8_t) (count * 2), frame)) {
+      uint8_t bytes = frame[2];
+      out.clear();
+      for (uint8_t i = 0; i + 1 < bytes; i += 2) {
+        uint16_t w = (uint16_t) (frame[3 + i] << 8) | frame[3 + i + 1];
+        out.push_back(w);
       }
-      // FIX: Tighter polling interval instead of delay(1) to avoid byte reception gaps
-      delayMicroseconds(100);
+      return true;
     }
-    // Timeout
     if (attempt + 1 == IO_RETRY_ATTEMPTS) {
-      ESP_LOGW(TAG, "RX: timeout waiting for response after %u attempts (cat=%u idx=%u page=%u cnt=%u)", (unsigned) IO_RETRY_ATTEMPTS, category, index, page, count);
+      ESP_LOGW(TAG, "RX: no valid response after %u attempts (cat=%u idx=%u page=%u cnt=%u)", (unsigned) IO_RETRY_ATTEMPTS, category, index, page, count);
     } else {
-      ESP_LOGD(TAG, "RX: timeout attempt %u (cat=%u idx=%u page=%u) -> retry", (unsigned) attempt + 1, category, index, page);
+      ESP_LOGD(TAG, "RX: no valid response attempt %u (cat=%u idx=%u page=%u) -> retry", (unsigned) attempt + 1, category, index, page);
     }
-  next_attempt:;
   }
+  this->bus_.failures++;
   return false;
 }
 
 bool WavinAHC9000::write_register(uint8_t category, uint8_t page, uint8_t index, uint16_t value) {
+  this->bus_.transactions++;
   for (uint8_t attempt = 0; attempt < IO_WRITE_RETRY_ATTEMPTS; attempt++) {
+    if (attempt > 0) this->bus_.retries++;
     this->inter_frame_delay_();
 
     uint8_t msg[10];
@@ -476,50 +547,30 @@ bool WavinAHC9000::write_register(uint8_t category, uint8_t page, uint8_t index,
 
     this->prepare_for_tx_();
     ESP_LOGD(TAG, "TX-WR: cat=%u idx=%u page=%u val=0x%04X attempt=%u", category, index, page, (unsigned) value, (unsigned) attempt + 1);
+    this->tx_len_ = 10;
     this->write_array(msg, 10);
     this->flush();
     this->finish_tx_();
 
-    std::vector<uint8_t> buf;
-    uint32_t start = millis();
-    while (millis() - start < this->receive_timeout_ms_) {
-      while (this->available()) {
-        int c = this->read();
-        if (c < 0) break;
-        buf.push_back((uint8_t) c);
-        if (buf.size() >= 5) {
-          uint8_t expected = (uint8_t) (buf[2] + 5);
-          if (buf[0] == DEVICE_ADDR && buf[1] == FC_WRITE && buf.size() == expected) {
-            uint16_t rcrc = crc16(buf.data(), buf.size());
-            bool ok = (rcrc == 0);
-            if (!ok) {
-              if (attempt + 1 == IO_WRITE_RETRY_ATTEMPTS) {
-                ESP_LOGW(TAG, "ACK-WR: CRC mismatch after %u attempts (cat=%u idx=%u page=%u)", (unsigned) IO_WRITE_RETRY_ATTEMPTS, category, index, page);
-              } else {
-                ESP_LOGD(TAG, "ACK-WR: CRC mismatch attempt %u -> retry", (unsigned) attempt + 1);
-              }
-              goto next_wr_attempt;
-            }
-            ESP_LOGD(TAG, "ACK-WR: OK");
-            return true;
-          }
-        }
-      }
-      // FIX: Tighter polling interval instead of delay(1) to avoid byte reception gaps
-      delayMicroseconds(100);
+    std::vector<uint8_t> frame;
+    if (this->receive_frame_(FC_WRITE, 2, frame)) {
+      ESP_LOGD(TAG, "ACK-WR: OK");
+      return true;
     }
     if (attempt + 1 == IO_WRITE_RETRY_ATTEMPTS) {
-      ESP_LOGW(TAG, "ACK-WR: timeout after %u attempts (cat=%u idx=%u page=%u)", (unsigned) IO_WRITE_RETRY_ATTEMPTS, category, index, page);
+      ESP_LOGW(TAG, "ACK-WR: no valid ack after %u attempts (cat=%u idx=%u page=%u)", (unsigned) IO_WRITE_RETRY_ATTEMPTS, category, index, page);
     } else {
-      ESP_LOGD(TAG, "ACK-WR: timeout attempt %u (cat=%u idx=%u page=%u) -> retry", (unsigned) attempt + 1, category, index, page);
+      ESP_LOGD(TAG, "ACK-WR: no valid ack attempt %u (cat=%u idx=%u page=%u) -> retry", (unsigned) attempt + 1, category, index, page);
     }
-  next_wr_attempt:;
   }
+  this->bus_.failures++;
   return false;
 }
 
 bool WavinAHC9000::write_masked_register(uint8_t category, uint8_t page, uint8_t index, uint16_t and_mask, uint16_t or_mask) {
+  this->bus_.transactions++;
   for (uint8_t attempt = 0; attempt < IO_WRITE_RETRY_ATTEMPTS; attempt++) {
+    if (attempt > 0) this->bus_.retries++;
     this->inter_frame_delay_();
 
     uint8_t msg[12];
@@ -539,45 +590,23 @@ bool WavinAHC9000::write_masked_register(uint8_t category, uint8_t page, uint8_t
 
     this->prepare_for_tx_();
     ESP_LOGD(TAG, "TX-WM: cat=%u idx=%u page=%u and=0x%04X or=0x%04X attempt=%u", category, index, page, (unsigned) and_mask, (unsigned) or_mask, (unsigned) attempt + 1);
+    this->tx_len_ = 12;
     this->write_array(msg, 12);
     this->flush();
     this->finish_tx_();
 
-    std::vector<uint8_t> buf;
-    uint32_t start = millis();
-    while (millis() - start < this->receive_timeout_ms_) {
-      while (this->available()) {
-        int c = this->read();
-        if (c < 0) break;
-        buf.push_back((uint8_t) c);
-        if (buf.size() >= 5) {
-          uint8_t expected = (uint8_t) (buf[2] + 5);
-          if (buf[0] == DEVICE_ADDR && buf[1] == FC_WRITE_MASKED && buf.size() == expected) {
-            uint16_t rcrc = crc16(buf.data(), buf.size());
-            bool ok = (rcrc == 0);
-            if (!ok) {
-              if (attempt + 1 == IO_WRITE_RETRY_ATTEMPTS) {
-                ESP_LOGW(TAG, "ACK-WM: CRC mismatch after %u attempts (cat=%u idx=%u page=%u)", (unsigned) IO_WRITE_RETRY_ATTEMPTS, category, index, page);
-              } else {
-                ESP_LOGD(TAG, "ACK-WM: CRC mismatch attempt %u -> retry", (unsigned) attempt + 1);
-              }
-              goto next_wm_attempt;
-            }
-            ESP_LOGD(TAG, "ACK-WM: OK");
-            return true;
-          }
-        }
-      }
-      // FIX: Tighter polling interval instead of delay(1) to avoid byte reception gaps
-      delayMicroseconds(100);
+    std::vector<uint8_t> frame;
+    if (this->receive_frame_(FC_WRITE_MASKED, 2, frame)) {
+      ESP_LOGD(TAG, "ACK-WM: OK");
+      return true;
     }
     if (attempt + 1 == IO_WRITE_RETRY_ATTEMPTS) {
-      ESP_LOGW(TAG, "ACK-WM: timeout after %u attempts (cat=%u idx=%u page=%u)", (unsigned) IO_WRITE_RETRY_ATTEMPTS, category, index, page);
+      ESP_LOGW(TAG, "ACK-WM: no valid ack after %u attempts (cat=%u idx=%u page=%u)", (unsigned) IO_WRITE_RETRY_ATTEMPTS, category, index, page);
     } else {
-      ESP_LOGD(TAG, "ACK-WM: timeout attempt %u (cat=%u idx=%u page=%u) -> retry", (unsigned) attempt + 1, category, index, page);
+      ESP_LOGD(TAG, "ACK-WM: no valid ack attempt %u (cat=%u idx=%u page=%u) -> retry", (unsigned) attempt + 1, category, index, page);
     }
-  next_wm_attempt:;
   }
+  this->bus_.failures++;
   return false;
 }
 
@@ -1116,42 +1145,55 @@ void WavinAHC9000::publish_updates() {
 }
 
 
-void WavinAHC9000::clear_stale_rx_() {
-  // FIX: Always clear RX buffer regardless of flush_rx_before_tx_ flag when called explicitly
-  int discarded = 0;
+uint32_t WavinAHC9000::clear_stale_rx_() {
+  uint32_t discarded = 0;
   while (this->available()) {
     int c = this->read();
     if (c < 0) break;
     discarded++;
   }
   if (discarded > 0) {
-    ESP_LOGD(TAG, "Flushed %d stale RX bytes", discarded);
+    ESP_LOGD(TAG, "Flushed %u stale RX bytes", (unsigned) discarded);
   }
+  return discarded;
 }
 
 void WavinAHC9000::prepare_for_tx_() {
-  // FIX: Always flush stale RX bytes before transmitting on half-duplex RS485
-  if (this->flush_rx_before_tx_) {
-    this->clear_stale_rx_();
-  }
+  // Anything sitting in the RX buffer now is left over from a previous
+  // transaction and would desynchronise this one, so drop it here - before
+  // transmitting, which is the only point at which discarding is safe.
+  if (this->flush_rx_before_tx_) this->bus_.discarded_pre_tx += this->clear_stale_rx_();
   if (this->flow_control_pin_ != nullptr) this->flow_control_pin_->digital_write(true);
   if (this->tx_enable_pin_ != nullptr) this->tx_enable_pin_->digital_write(true);
   if (this->pre_tx_delay_us_ > 0) delayMicroseconds(this->pre_tx_delay_us_);
 }
 
 void WavinAHC9000::finish_tx_() {
-  // FIX: Wait for UART TX FIFO to fully drain before switching flow control.
-  // The flush() in the caller drains the software buffer, but hardware FIFO may still
-  // be clocking out the last byte. The post_tx_guard covers this plus transceiver turnaround.
+  // Release the driver as soon as the last stop bit is on the wire. The caller
+  // has already called flush(), so only the transceiver's own turnaround time
+  // remains - a fraction of a character. Holding DE longer keeps the master
+  // driving the pair while the controller is trying to answer, which corrupts
+  // or swallows the start of the reply.
   delayMicroseconds(this->post_tx_guard_us_);
   if (this->tx_enable_pin_ != nullptr) this->tx_enable_pin_->digital_write(false);
   if (this->flow_control_pin_ != nullptr) this->flow_control_pin_->digital_write(false);
-  // FIX: After switching transceiver to RX mode, wait for it to settle and then
-  // discard any TX echo bytes that leaked into the RX FIFO during transmission.
-  // On half-duplex RS485, the transceiver's own TX appears on RX while the DE pin is high.
-  // Some bytes may still be in the hardware FIFO after switching DE low.
-  delayMicroseconds(500);  // transceiver RX settling time
-  this->clear_stale_rx_();
+
+  // Only a transceiver whose receiver stays enabled during transmission echoes
+  // our own frame back. With a single DE/RE flow-control pin the receiver is
+  // disabled while sending, so there is nothing to discard - and discarding
+  // here would eat the beginning of the controller's reply, which is what the
+  // previous unconditional settle-delay + flush did. receive_frame_()
+  // resynchronises on the header, so anything that does slip through is
+  // handled there.
+  if (this->expect_echo_) {
+    uint32_t echo = 0;
+    while (echo < this->tx_len_ && this->available()) {
+      if (this->read() < 0) break;
+      echo++;
+    }
+    this->bus_.discarded_post_tx += echo;
+  }
+  this->tx_done_us_ = micros();
 }
 
 void WavinAHC9000::inter_frame_delay_() {
