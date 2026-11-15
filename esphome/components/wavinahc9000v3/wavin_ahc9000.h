@@ -126,9 +126,7 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   void publish_updates();
   void prepare_for_tx_();
   void finish_tx_();
-  uint32_t clear_stale_rx_();
-  bool receive_frame_(uint8_t function_code, uint8_t expected_payload_bytes, std::vector<uint8_t> &frame);
-  void log_bus_stats_();
+  void clear_stale_rx_();
   void handle_standby_keepalive_(uint8_t channel, bool is_off, std::vector<uint8_t> &reassert_list);
   // Inter-frame silence to ensure bus turnaround between consecutive transactions
   void inter_frame_delay_();
@@ -203,32 +201,6 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   uint32_t post_tx_guard_us_{300};
   uint32_t inter_frame_delay_us_{0};  // FIX: silence gap between consecutive transactions (set by setup())
   bool flush_rx_before_tx_{false};
-  // True only when the transceiver keeps receiving while it transmits, i.e.
-  // a bare tx_enable_pin. A combined DE/RE flow-control pin mutes the receiver.
-  bool expect_echo_{false};
-  uint8_t tx_len_{0};        // bytes in the frame just sent, bounds the echo drain
-  uint32_t tx_done_us_{0};   // when the driver was released, for reply timing
-  uint32_t rx_gap_us_{3000}; // silence that ends a reply, set from the baud rate
-
-  // --- bus diagnostics (ported from wavinahc9000v4) ---------------------
-  // Counted for every transaction so the health of the RS-485 link can be
-  // measured rather than guessed at. Reported by log_bus_stats_().
-  struct BusStats {
-    uint32_t transactions{0};     // transactions started
-    uint32_t retries{0};          // attempts beyond the first
-    uint32_t failures{0};         // transactions that gave up entirely
-    uint32_t timeouts{0};         // attempts that saw no usable frame
-    uint32_t crc_errors{0};       // attempts that saw a frame with a bad CRC
-    uint32_t resyncs{0};          // leading bytes dropped to find a header
-    uint32_t discarded_pre_tx{0}; // stale bytes dropped before transmitting
-    uint32_t discarded_post_tx{0};// echo bytes dropped after transmitting
-    uint32_t reply_us_min{0xFFFFFFFF};
-    uint32_t reply_us_max{0};
-    uint64_t reply_us_sum{0};
-    uint32_t reply_count{0};
-  } bus_;
-  uint32_t bus_log_due_{0};
-  static constexpr uint32_t BUS_STATS_INTERVAL_MS = 300000;  // 5 minutes
   bool keep_standby_alive_{false};
   uint32_t standby_keepalive_interval_ms_{180000};
   std::map<uint8_t, uint32_t> standby_keepalive_deadlines_;
