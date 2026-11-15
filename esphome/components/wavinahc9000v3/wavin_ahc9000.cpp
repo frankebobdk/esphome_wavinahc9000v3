@@ -1169,6 +1169,13 @@ void WavinAHC9000::clear_stale_rx_() {
 }
 
 void WavinAHC9000::prepare_for_tx_() {
+  if (this->pre_write_delay_ms_ > 0) {
+    if (this->pre_write_yield_) {
+      delay(this->pre_write_delay_ms_);
+    } else {
+      delayMicroseconds(this->pre_write_delay_ms_ * 1000UL);
+    }
+  }
   // FIX: Always flush stale RX bytes before transmitting on half-duplex RS485
   if (this->flush_rx_before_tx_) {
     this->clear_stale_rx_();

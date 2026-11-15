@@ -45,6 +45,10 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   void set_module_profile(ModuleProfile profile) { this->module_profile_ = profile; }
   void set_rts_pre_assert_us(uint32_t us) { this->rts_pre_assert_us_ = us; }
   void set_rs485_clear_dl(bool v) { this->rs485_clear_dl_ = v; }
+  void set_pre_write_delay(uint32_t ms, bool yield_mode) {
+    this->pre_write_delay_ms_ = ms;
+    this->pre_write_yield_ = yield_mode;
+  }
   void set_poll_channels_per_cycle(uint8_t n) { this->poll_channels_per_cycle_ = n == 0 ? 1 : (n > 16 ? 16 : n); }
   void set_allow_mode_writes(bool v) { this->allow_mode_writes_ = v; }
   void set_keep_standby_alive(bool v);
@@ -205,6 +209,8 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   bool flush_rx_before_tx_{false};
   uint32_t rts_pre_assert_us_{0};
   bool rs485_clear_dl_{false};
+  uint32_t pre_write_delay_ms_{0};
+  bool pre_write_yield_{false};
   // Bus diagnostics: counted per transaction, logged every 5 minutes.
   struct BusStats {
     uint32_t transactions{0};            // transactions started
