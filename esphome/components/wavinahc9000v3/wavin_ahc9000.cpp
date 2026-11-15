@@ -74,6 +74,9 @@ void WavinAHC9000::setup() {
     this->inter_frame_delay_us_ = std::max<uint32_t>(frame_us * 10, 3000);
   }
 
+  if (this->pre_tx_override_us_ >= 0) this->pre_tx_delay_us_ = (uint32_t) this->pre_tx_override_us_;
+  if (this->post_tx_override_us_ >= 0) this->post_tx_guard_us_ = (uint32_t) this->post_tx_override_us_;
+
   const char *profile = (this->module_profile_ == ModuleProfile::MODULE_USTEPPER) ? "ustepper" : "default";
   ESP_LOGCONFIG(TAG, "Wavin AHC9000 hub setup (baud=%u module=%s guard=%uus pre=%uus interframe=%uus "
                 "rx_gap=%uus timeout=%ums echo=%s)",
