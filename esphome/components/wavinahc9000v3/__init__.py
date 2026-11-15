@@ -22,8 +22,6 @@ CONF_RECEIVE_TIMEOUT_MS = "receive_timeout_ms"
 CONF_POLL_CHANNELS_PER_CYCLE = "poll_channels_per_cycle"
 CONF_ALLOW_MODE_WRITES = "allow_mode_writes"
 CONF_MODULE = "module"
-CONF_PRE_TX_DELAY_US = "pre_tx_delay_us"
-CONF_POST_TX_GUARD_US = "post_tx_guard_us"
 CONF_KEEP_STANDBY_ALIVE = "keep_standby_alive"
 CONF_STANDBY_KEEPALIVE_INTERVAL = "standby_keepalive_interval"
 
@@ -48,10 +46,6 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_POLL_CHANNELS_PER_CYCLE, default=2): cv.int_range(min=1, max=16),
             cv.Optional(CONF_ALLOW_MODE_WRITES, default=True): cv.boolean,
             cv.Optional(CONF_MODULE, default="default"): cv.enum(MODULE_OPTIONS, upper=False),
-            # Manual DE/RE timing overrides (only relevant with flow_control_pin/tx_enable_pin
-            # on this component). Defaults come from the module profile.
-            cv.Optional(CONF_PRE_TX_DELAY_US): cv.int_range(min=0, max=20000),
-            cv.Optional(CONF_POST_TX_GUARD_US): cv.int_range(min=0, max=20000),
             cv.Optional(CONF_KEEP_STANDBY_ALIVE, default=False): cv.boolean,
             cv.Optional(CONF_STANDBY_KEEPALIVE_INTERVAL, default="180s"): cv.time_period,
             **_FRIENDLY_NAME_KEYS,
@@ -75,10 +69,6 @@ async def to_code(config):
         cg.add(var.set_flow_control_pin(pin))
     if CONF_TEMP_DIVISOR in config:
         cg.add(var.set_temp_divisor(config[CONF_TEMP_DIVISOR]))
-    if CONF_PRE_TX_DELAY_US in config:
-        cg.add(var.set_pre_tx_delay_us(config[CONF_PRE_TX_DELAY_US]))
-    if CONF_POST_TX_GUARD_US in config:
-        cg.add(var.set_post_tx_guard_us(config[CONF_POST_TX_GUARD_US]))
     if CONF_RECEIVE_TIMEOUT_MS in config:
         cg.add(var.set_receive_timeout_ms(config[CONF_RECEIVE_TIMEOUT_MS]))
     if CONF_POLL_CHANNELS_PER_CYCLE in config:
