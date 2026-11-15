@@ -417,10 +417,10 @@ void WavinAHC9000::add_active_channel(uint8_t ch) {
 // Repair functions removed; use normalize_channel_config via API service
 
 bool WavinAHC9000::read_registers(uint8_t category, uint8_t page, uint8_t index, uint8_t count, std::vector<uint16_t> &out) {
-  // Retry logic: attempt up to IO_RETRY_ATTEMPTS. First attempt failures are logged at DEBUG; only the
+  // Retry logic: attempt up to read_attempts_ (YAML read_attempts, default 3). First attempt failures are logged at DEBUG; only the
   // final failed attempt escalates to WARN to reduce log noise from transient bus glitches.
   this->bus_.transactions++;
-  for (uint8_t attempt = 0; attempt < IO_RETRY_ATTEMPTS; attempt++) {
+  for (uint8_t attempt = 0; attempt < this->read_attempts_; attempt++) {
     if (attempt == 1) this->bus_.first_attempt_failures++;
     if (attempt > 0) this->bus_.retries++;
     // FIX: Inter-frame delay before each transaction to allow bus turnaround
@@ -456,8 +456,8 @@ bool WavinAHC9000::read_registers(uint8_t category, uint8_t page, uint8_t index,
             uint16_t rcrc = crc16(buf.data(), buf.size());
             if (rcrc != 0) {
               // CRC mismatch: retry unless last attempt
-              if (attempt + 1 == IO_RETRY_ATTEMPTS) {
-                ESP_LOGW(TAG, "RX: CRC mismatch (len=%u) after %u attempts", (unsigned) buf.size(), (unsigned) IO_RETRY_ATTEMPTS);
+              if (attempt + 1 == this->read_attempts_) {
+                ESP_LOGW(TAG, "RX: CRC mismatch (len=%u) after %u attempts", (unsigned) buf.size(), (unsigned) this->read_attempts_);
               } else {
                 ESP_LOGD(TAG, "RX: CRC mismatch attempt %u (len=%u) -> retry", (unsigned) attempt + 1, (unsigned) buf.size());
               }
@@ -477,8 +477,8 @@ bool WavinAHC9000::read_registers(uint8_t category, uint8_t page, uint8_t index,
       delayMicroseconds(100);
     }
     // Timeout
-    if (attempt + 1 == IO_RETRY_ATTEMPTS) {
-      ESP_LOGW(TAG, "RX: timeout waiting for response after %u attempts (cat=%u idx=%u page=%u cnt=%u)", (unsigned) IO_RETRY_ATTEMPTS, category, index, page, count);
+    if (attempt + 1 == this->read_attempts_) {
+      ESP_LOGW(TAG, "RX: timeout waiting for response after %u attempts (cat=%u idx=%u page=%u cnt=%u)", (unsigned) this->read_attempts_, category, index, page, count);
     } else {
       ESP_LOGD(TAG, "RX: timeout attempt %u (cat=%u idx=%u page=%u) -> retry", (unsigned) attempt + 1, category, index, page);
     }

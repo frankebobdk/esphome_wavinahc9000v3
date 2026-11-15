@@ -24,6 +24,7 @@ CONF_ALLOW_MODE_WRITES = "allow_mode_writes"
 CONF_MODULE = "module"
 CONF_RTS_PRE_ASSERT_US = "rts_pre_assert_us"
 CONF_RS485_CLEAR_DL = "rs485_clear_dl"
+CONF_READ_ATTEMPTS = "read_attempts"
 CONF_PRE_WRITE_DELAY_MS = "pre_write_delay_ms"
 CONF_PRE_WRITE_MODE = "pre_write_mode"
 CONF_KEEP_STANDBY_ALIVE = "keep_standby_alive"
@@ -56,6 +57,8 @@ CONFIG_SCHEMA = (
             # rs485_clear_dl: clear DL0_EN/DL1_EN (Espressif esp-idf issue #12568).
             cv.Optional(CONF_RTS_PRE_ASSERT_US, default=0): cv.int_range(min=0, max=20000),
             cv.Optional(CONF_RS485_CLEAR_DL, default=False): cv.boolean,
+            # read_attempts: attempts per register read before giving up (writes stay at 5).
+            cv.Optional(CONF_READ_ATTEMPTS, default=3): cv.int_range(min=1, max=10),
             # pre_write_delay_ms: wait before every UART write. pre_write_mode selects how:
             # "busy" = busy-wait, "yield" = delay() so other tasks run.
             cv.Optional(CONF_PRE_WRITE_DELAY_MS, default=0): cv.int_range(min=0, max=200),
@@ -85,6 +88,7 @@ async def to_code(config):
         cg.add(var.set_temp_divisor(config[CONF_TEMP_DIVISOR]))
     cg.add(var.set_rts_pre_assert_us(config[CONF_RTS_PRE_ASSERT_US]))
     cg.add(var.set_rs485_clear_dl(config[CONF_RS485_CLEAR_DL]))
+    cg.add(var.set_read_attempts(config[CONF_READ_ATTEMPTS]))
     cg.add(var.set_pre_write_delay(config[CONF_PRE_WRITE_DELAY_MS], config[CONF_PRE_WRITE_MODE] == "yield"))
     if CONF_RECEIVE_TIMEOUT_MS in config:
         cg.add(var.set_receive_timeout_ms(config[CONF_RECEIVE_TIMEOUT_MS]))
