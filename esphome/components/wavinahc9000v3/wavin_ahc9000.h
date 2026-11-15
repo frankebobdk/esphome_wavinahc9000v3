@@ -43,6 +43,8 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   // Optional half-duplex RS485 DE/RE (flow control) pin. If provided we drive HIGH to transmit and LOW to receive.
   void set_flow_control_pin(GPIOPin *p) { this->flow_control_pin_ = p; }
   void set_module_profile(ModuleProfile profile) { this->module_profile_ = profile; }
+  void set_rts_pre_assert_us(uint32_t us) { this->rts_pre_assert_us_ = us; }
+  void set_rs485_clear_dl(bool v) { this->rs485_clear_dl_ = v; }
   void set_poll_channels_per_cycle(uint8_t n) { this->poll_channels_per_cycle_ = n == 0 ? 1 : (n > 16 ? 16 : n); }
   void set_allow_mode_writes(bool v) { this->allow_mode_writes_ = v; }
   void set_keep_standby_alive(bool v);
@@ -201,6 +203,17 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   uint32_t post_tx_guard_us_{300};
   uint32_t inter_frame_delay_us_{0};  // FIX: silence gap between consecutive transactions (set by setup())
   bool flush_rx_before_tx_{false};
+  uint32_t rts_pre_assert_us_{0};
+  bool rs485_clear_dl_{false};
+  // Bus diagnostics: counted per transaction, logged every 5 minutes.
+  struct BusStats {
+    uint32_t transactions{0};            // transactions started
+    uint32_t first_attempt_failures{0};  // transactions whose first attempt got no valid reply
+    uint32_t retries{0};                 // attempts beyond the first
+    uint32_t failures{0};                // transactions that gave up entirely
+  } bus_;
+  uint32_t bus_log_due_{0};
+  static constexpr uint32_t BUS_STATS_INTERVAL_MS = 300000;
   bool keep_standby_alive_{false};
   uint32_t standby_keepalive_interval_ms_{180000};
   std::map<uint8_t, uint32_t> standby_keepalive_deadlines_;

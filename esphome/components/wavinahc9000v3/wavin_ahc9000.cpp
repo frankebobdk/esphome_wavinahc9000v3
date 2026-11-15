@@ -6,6 +6,11 @@
 #include <algorithm>
 #include <sstream>
 #include "esp_task_wdt.h"
+#ifdef USE_ESP32
+#include "esphome/components/uart/uart_component_esp_idf.h"
+#include <driver/uart.h>
+#include <soc/uart_reg.h>
+#endif
 
 namespace esphome {
 namespace wavinahc9000v3 {
@@ -79,6 +84,17 @@ void WavinAHC9000::setup() {
       break;
   }
 
+#ifdef USE_ESP32
+  if (this->rs485_clear_dl_ && this->parent_ != nullptr) {
+    // Espressif esp-idf #12568: RS485 half-duplex mode on C3 sets DL0_EN/DL1_EN, which
+    // stretch the stop bit. Same workaround as Omniflux/esphome-fujitsu-halcyon PR #43.
+    auto n = static_cast<uart::IDFUARTComponent *>(this->parent_)->get_hw_serial_number();
+    REG_CLR_BIT(UART_RS485_CONF_REG(n), UART_DL0_EN_M | UART_DL1_EN_M);
+  }
+#endif
+  ESP_LOGCONFIG(TAG, "RS485 experiments: rts_pre_assert=%uus clear_dl=%s", (unsigned) this->rts_pre_assert_us_,
+                this->rs485_clear_dl_ ? "yes" : "no");
+
   const char *profile = (this->module_profile_ == ModuleProfile::MODULE_USTEPPER) ? "ustepper" : "default";
   ESP_LOGCONFIG(TAG, "Wavin AHC9000 hub setup (baud=%u module=%s guard=%uus pre=%uus interframe=%uus flush_rx=%s)",
                 (unsigned) baud, profile, (unsigned) this->post_tx_guard_us_,
@@ -116,6 +132,17 @@ std::string WavinAHC9000::get_channel_friendly_name(uint8_t channel) const {
 }
 
 void WavinAHC9000::update() {
+  // Bus health line every 5 minutes. Counters only; no change to bus timing.
+  {
+    const uint32_t now_ms = millis();
+    if (this->bus_log_due_ == 0) this->bus_log_due_ = now_ms + BUS_STATS_INTERVAL_MS;
+    if ((int32_t) (now_ms - this->bus_log_due_) >= 0) {
+      ESP_LOGI(TAG, "bus: tx=%u first_fail=%u retry=%u fail=%u", (unsigned) this->bus_.transactions,
+               (unsigned) this->bus_.first_attempt_failures, (unsigned) this->bus_.retries,
+               (unsigned) this->bus_.failures);
+      this->bus_log_due_ = now_ms + BUS_STATS_INTERVAL_MS;
+    }
+  }
   std::vector<uint8_t> keepalive_reassert;
   keepalive_reassert.reserve(4);
   // If polling is temporarily suspended (after a write), skip until window expires
@@ -392,7 +419,10 @@ void WavinAHC9000::add_active_channel(uint8_t ch) {
 bool WavinAHC9000::read_registers(uint8_t category, uint8_t page, uint8_t index, uint8_t count, std::vector<uint16_t> &out) {
   // Retry logic: attempt up to IO_RETRY_ATTEMPTS. First attempt failures are logged at DEBUG; only the
   // final failed attempt escalates to WARN to reduce log noise from transient bus glitches.
+  this->bus_.transactions++;
   for (uint8_t attempt = 0; attempt < IO_RETRY_ATTEMPTS; attempt++) {
+    if (attempt == 1) this->bus_.first_attempt_failures++;
+    if (attempt > 0) this->bus_.retries++;
     // FIX: Inter-frame delay before each transaction to allow bus turnaround
     this->inter_frame_delay_();
 
@@ -454,11 +484,15 @@ bool WavinAHC9000::read_registers(uint8_t category, uint8_t page, uint8_t index,
     }
   next_attempt:;
   }
+  this->bus_.failures++;
   return false;
 }
 
 bool WavinAHC9000::write_register(uint8_t category, uint8_t page, uint8_t index, uint16_t value) {
+  this->bus_.transactions++;
   for (uint8_t attempt = 0; attempt < IO_WRITE_RETRY_ATTEMPTS; attempt++) {
+    if (attempt == 1) this->bus_.first_attempt_failures++;
+    if (attempt > 0) this->bus_.retries++;
     this->inter_frame_delay_();
 
     uint8_t msg[10];
@@ -515,11 +549,15 @@ bool WavinAHC9000::write_register(uint8_t category, uint8_t page, uint8_t index,
     }
   next_wr_attempt:;
   }
+  this->bus_.failures++;
   return false;
 }
 
 bool WavinAHC9000::write_masked_register(uint8_t category, uint8_t page, uint8_t index, uint16_t and_mask, uint16_t or_mask) {
+  this->bus_.transactions++;
   for (uint8_t attempt = 0; attempt < IO_WRITE_RETRY_ATTEMPTS; attempt++) {
+    if (attempt == 1) this->bus_.first_attempt_failures++;
+    if (attempt > 0) this->bus_.retries++;
     this->inter_frame_delay_();
 
     uint8_t msg[12];
@@ -578,6 +616,7 @@ bool WavinAHC9000::write_masked_register(uint8_t category, uint8_t page, uint8_t
     }
   next_wm_attempt:;
   }
+  this->bus_.failures++;
   return false;
 }
 
@@ -1134,6 +1173,17 @@ void WavinAHC9000::prepare_for_tx_() {
   if (this->flush_rx_before_tx_) {
     this->clear_stale_rx_();
   }
+#ifdef USE_ESP32
+  if (this->rts_pre_assert_us_ > 0 && this->parent_ != nullptr) {
+    // In RS485 half-duplex mode the IDF driver asserts RTS (DE) in the same critical
+    // section as the FIFO write, i.e. with no lead time. Assert it early so the bus is
+    // driven to mark before the start bit. Level 0 is what the driver itself uses to
+    // assert; it releases DE again in its TX_DONE interrupt.
+    auto n = static_cast<uart::IDFUARTComponent *>(this->parent_)->get_hw_serial_number();
+    uart_set_rts((uart_port_t) n, 0);
+    delayMicroseconds(this->rts_pre_assert_us_);
+  }
+#endif
   if (this->flow_control_pin_ != nullptr) this->flow_control_pin_->digital_write(true);
   if (this->tx_enable_pin_ != nullptr) this->tx_enable_pin_->digital_write(true);
   if (this->pre_tx_delay_us_ > 0) delayMicroseconds(this->pre_tx_delay_us_);
