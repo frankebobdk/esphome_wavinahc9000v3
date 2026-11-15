@@ -22,6 +22,8 @@ CONF_RECEIVE_TIMEOUT_MS = "receive_timeout_ms"
 CONF_POLL_CHANNELS_PER_CYCLE = "poll_channels_per_cycle"
 CONF_ALLOW_MODE_WRITES = "allow_mode_writes"
 CONF_MODULE = "module"
+CONF_RS485_CLEAR_DL = "rs485_clear_dl"
+CONF_READ_ATTEMPTS = "read_attempts"
 CONF_KEEP_STANDBY_ALIVE = "keep_standby_alive"
 CONF_STANDBY_KEEPALIVE_INTERVAL = "standby_keepalive_interval"
 
@@ -46,6 +48,12 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_POLL_CHANNELS_PER_CYCLE, default=2): cv.int_range(min=1, max=16),
             cv.Optional(CONF_ALLOW_MODE_WRITES, default=True): cv.boolean,
             cv.Optional(CONF_MODULE, default="default"): cv.enum(MODULE_OPTIONS, upper=False),
+            # rs485_clear_dl: clear DL0_EN/DL1_EN after ESP-IDF enables RS485 half-duplex mode
+            # (Espressif esp-idf issue #12568). Only applies when flow_control_pin sits under
+            # uart:. Roughly halved lost transactions on an ESP32-C3 rev1 module.
+            cv.Optional(CONF_RS485_CLEAR_DL, default=False): cv.boolean,
+            # read_attempts: attempts per register read before giving up (writes stay at 5).
+            cv.Optional(CONF_READ_ATTEMPTS, default=3): cv.int_range(min=1, max=10),
             cv.Optional(CONF_KEEP_STANDBY_ALIVE, default=False): cv.boolean,
             cv.Optional(CONF_STANDBY_KEEPALIVE_INTERVAL, default="180s"): cv.time_period,
             **_FRIENDLY_NAME_KEYS,
@@ -69,6 +77,8 @@ async def to_code(config):
         cg.add(var.set_flow_control_pin(pin))
     if CONF_TEMP_DIVISOR in config:
         cg.add(var.set_temp_divisor(config[CONF_TEMP_DIVISOR]))
+    cg.add(var.set_rs485_clear_dl(config[CONF_RS485_CLEAR_DL]))
+    cg.add(var.set_read_attempts(config[CONF_READ_ATTEMPTS]))
     if CONF_RECEIVE_TIMEOUT_MS in config:
         cg.add(var.set_receive_timeout_ms(config[CONF_RECEIVE_TIMEOUT_MS]))
     if CONF_POLL_CHANNELS_PER_CYCLE in config:
