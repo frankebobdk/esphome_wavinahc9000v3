@@ -434,6 +434,7 @@ bool WavinAHC9000::read_registers(uint8_t category, uint8_t page, uint8_t index,
   // final failed attempt escalates to WARN to reduce log noise from transient bus glitches.
   this->bus_.transactions++;
   for (uint8_t attempt = 0; attempt < this->read_attempts_; attempt++) {
+    esp_task_wdt_reset();  // a transaction can block for attempts x receive_timeout
     if (attempt == 1) this->bus_.first_attempt_failures++;
     if (attempt > 0) this->bus_.retries++;
     // FIX: Inter-frame delay before each transaction to allow bus turnaround
@@ -558,6 +559,7 @@ bool WavinAHC9000::retry_pending_write_() {
 bool WavinAHC9000::write_register_raw_(uint8_t category, uint8_t page, uint8_t index, uint16_t value) {
   this->bus_.transactions++;
   for (uint8_t attempt = 0; attempt < IO_WRITE_RETRY_ATTEMPTS; attempt++) {
+    esp_task_wdt_reset();  // a transaction can block for attempts x receive_timeout
     if (attempt == 1) this->bus_.first_attempt_failures++;
     if (attempt > 0) this->bus_.retries++;
     this->inter_frame_delay_();
@@ -623,6 +625,7 @@ bool WavinAHC9000::write_register_raw_(uint8_t category, uint8_t page, uint8_t i
 bool WavinAHC9000::write_masked_register_raw_(uint8_t category, uint8_t page, uint8_t index, uint16_t and_mask, uint16_t or_mask) {
   this->bus_.transactions++;
   for (uint8_t attempt = 0; attempt < IO_WRITE_RETRY_ATTEMPTS; attempt++) {
+    esp_task_wdt_reset();  // a transaction can block for attempts x receive_timeout
     if (attempt == 1) this->bus_.first_attempt_failures++;
     if (attempt > 0) this->bus_.retries++;
     this->inter_frame_delay_();
