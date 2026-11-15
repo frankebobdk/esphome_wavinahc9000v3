@@ -136,9 +136,19 @@ void WavinAHC9000::update() {
     const uint32_t now_ms = millis();
     if (this->bus_log_due_ == 0) this->bus_log_due_ = now_ms + BUS_STATS_INTERVAL_MS;
     if ((int32_t) (now_ms - this->bus_log_due_) >= 0) {
-      ESP_LOGI(TAG, "bus: tx=%u first_fail=%u retry=%u fail=%u", (unsigned) this->bus_.transactions,
+      ESP_LOGI(TAG, "bus: tx=%u first_fail=%u retry=%u fail=%u wr_dropped=%u", (unsigned) this->bus_.transactions,
                (unsigned) this->bus_.first_attempt_failures, (unsigned) this->bus_.retries,
-               (unsigned) this->bus_.failures);
+               (unsigned) this->bus_.failures, (unsigned) this->bus_.writes_dropped);
+      // Sensors cover the window since the previous line, so Home Assistant keeps the history
+      // and nobody has to attach a log client (which changes the bus timing) to read it.
+      const uint32_t d_tx = this->bus_.transactions - this->bus_window_tx_;
+      const uint32_t d_fail = this->bus_.failures - this->bus_window_fail_;
+      this->bus_window_tx_ = this->bus_.transactions;
+      this->bus_window_fail_ = this->bus_.failures;
+      if (this->bus_loss_sensor_ != nullptr && d_tx > 0)
+        this->bus_loss_sensor_->publish_state(100.0f * (float) d_fail / (float) d_tx);
+      if (this->bus_writes_dropped_sensor_ != nullptr)
+        this->bus_writes_dropped_sensor_->publish_state((float) this->bus_.writes_dropped);
       this->bus_log_due_ = now_ms + BUS_STATS_INTERVAL_MS;
     }
   }
@@ -149,6 +159,9 @@ void WavinAHC9000::update() {
     ESP_LOGV(TAG, "Polling suspended for %u ms more", (unsigned) (this->suspend_polling_until_ - millis()));
     return;
   }
+
+  // One queued write per cycle, before any polling.
+  if (this->retry_pending_write_()) return;
 
   // Process any urgent channels first (scheduled due to a write)
   std::vector<uint16_t> regs;
@@ -489,6 +502,60 @@ bool WavinAHC9000::read_registers(uint8_t category, uint8_t page, uint8_t index,
 }
 
 bool WavinAHC9000::write_register(uint8_t category, uint8_t page, uint8_t index, uint16_t value) {
+  PendingWrite w{false, category, page, index, value, 0, WRITE_REQUEUE_CYCLES};
+  bool ok = this->write_register_raw_(category, page, index, value);
+  this->note_write_result_(w, ok);
+  return ok;
+}
+
+bool WavinAHC9000::write_masked_register(uint8_t category, uint8_t page, uint8_t index, uint16_t and_mask, uint16_t or_mask) {
+  PendingWrite w{true, category, page, index, and_mask, or_mask, WRITE_REQUEUE_CYCLES};
+  bool ok = this->write_masked_register_raw_(category, page, index, and_mask, or_mask);
+  this->note_write_result_(w, ok);
+  return ok;
+}
+
+// A write that used up all its attempts is queued and retried on later update cycles, so a
+// command from Home Assistant is not silently dropped. A newer write to the same register
+// (and, for masked writes, the same mask) replaces a queued one.
+void WavinAHC9000::note_write_result_(const PendingWrite &w, bool ok) {
+  if (this->retrying_write_) return;
+  auto same = [&w](const PendingWrite &p) {
+    return p.masked == w.masked && p.category == w.category && p.page == w.page && p.index == w.index &&
+           (!w.masked || p.b == w.b);
+  };
+  this->pending_writes_.erase(std::remove_if(this->pending_writes_.begin(), this->pending_writes_.end(), same),
+                              this->pending_writes_.end());
+  if (!ok) {
+    this->pending_writes_.push_back(w);
+    ESP_LOGW(TAG, "Write queued for retry (cat=%u idx=%u page=%u)", w.category, w.index, w.page);
+  }
+}
+
+// Returns true when a queued write was attempted this cycle (successful or not).
+bool WavinAHC9000::retry_pending_write_() {
+  if (this->pending_writes_.empty()) return false;
+  PendingWrite w = this->pending_writes_.front();
+  this->pending_writes_.erase(this->pending_writes_.begin());
+  this->retrying_write_ = true;
+  bool ok = w.masked ? this->write_masked_register_raw_(w.category, w.page, w.index, w.a, w.b)
+                     : this->write_register_raw_(w.category, w.page, w.index, w.a);
+  this->retrying_write_ = false;
+  if (ok) {
+    ESP_LOGI(TAG, "Queued write succeeded (cat=%u idx=%u page=%u)", w.category, w.index, w.page);
+    if (w.category == CAT_PACKED && w.page < 16) this->urgent_channels_.push_back((uint8_t) (w.page + 1));
+    this->suspend_polling_until_ = millis() + 100;
+  } else if (--w.cycles_left > 0) {
+    this->pending_writes_.push_back(w);
+  } else {
+    this->bus_.writes_dropped++;
+    ESP_LOGW(TAG, "Queued write dropped after %u cycles (cat=%u idx=%u page=%u)", (unsigned) WRITE_REQUEUE_CYCLES,
+             w.category, w.index, w.page);
+  }
+  return true;
+}
+
+bool WavinAHC9000::write_register_raw_(uint8_t category, uint8_t page, uint8_t index, uint16_t value) {
   this->bus_.transactions++;
   for (uint8_t attempt = 0; attempt < IO_WRITE_RETRY_ATTEMPTS; attempt++) {
     if (attempt == 1) this->bus_.first_attempt_failures++;
@@ -553,7 +620,7 @@ bool WavinAHC9000::write_register(uint8_t category, uint8_t page, uint8_t index,
   return false;
 }
 
-bool WavinAHC9000::write_masked_register(uint8_t category, uint8_t page, uint8_t index, uint16_t and_mask, uint16_t or_mask) {
+bool WavinAHC9000::write_masked_register_raw_(uint8_t category, uint8_t page, uint8_t index, uint16_t and_mask, uint16_t or_mask) {
   this->bus_.transactions++;
   for (uint8_t attempt = 0; attempt < IO_WRITE_RETRY_ATTEMPTS; attempt++) {
     if (attempt == 1) this->bus_.first_attempt_failures++;

@@ -62,6 +62,8 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
   void add_channel_climate(WavinZoneClimate *c);
   void add_group_climate(WavinZoneClimate *c);
   void add_channel_battery_sensor(uint8_t ch, sensor::Sensor *s);
+  void set_bus_loss_sensor(sensor::Sensor *s) { this->bus_loss_sensor_ = s; }
+  void set_bus_writes_dropped_sensor(sensor::Sensor *s) { this->bus_writes_dropped_sensor_ = s; }
   void add_channel_temperature_sensor(uint8_t ch, sensor::Sensor *s);
   void add_channel_comfort_setpoint_sensor(uint8_t ch, sensor::Sensor *s);
   void add_channel_floor_temperature_sensor(uint8_t ch, sensor::Sensor *s);
@@ -211,7 +213,26 @@ class WavinAHC9000 : public PollingComponent, public uart::UARTDevice {
     uint32_t first_attempt_failures{0};  // transactions whose first attempt got no valid reply
     uint32_t retries{0};                 // attempts beyond the first
     uint32_t failures{0};                // transactions that gave up entirely
+    uint32_t writes_dropped{0};          // writes abandoned after all requeue cycles
   } bus_;
+  uint32_t bus_window_tx_{0};
+  uint32_t bus_window_fail_{0};
+  sensor::Sensor *bus_loss_sensor_{nullptr};
+  sensor::Sensor *bus_writes_dropped_sensor_{nullptr};
+  // Writes that used up all attempts, retried one per update cycle.
+  struct PendingWrite {
+    bool masked;
+    uint8_t category, page, index;
+    uint16_t a, b;  // plain: a = value; masked: the two arguments of write_masked_register()
+    uint8_t cycles_left;
+  };
+  std::vector<PendingWrite> pending_writes_;
+  bool retrying_write_{false};
+  static constexpr uint8_t WRITE_REQUEUE_CYCLES = 5;
+  bool write_register_raw_(uint8_t category, uint8_t page, uint8_t index, uint16_t value);
+  bool write_masked_register_raw_(uint8_t category, uint8_t page, uint8_t index, uint16_t and_mask, uint16_t or_mask);
+  void note_write_result_(const PendingWrite &w, bool ok);
+  bool retry_pending_write_();
   uint32_t bus_log_due_{0};
   static constexpr uint32_t BUS_STATS_INTERVAL_MS = 300000;
   bool keep_standby_alive_{false};
